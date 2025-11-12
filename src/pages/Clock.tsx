@@ -11,12 +11,15 @@ import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Calendar } from '@/components/ui/calendar';
-import { Clock as ClockIcon, LogIn, LogOut, Calendar as CalendarIcon, Plus, Loader2, Users, Activity } from 'lucide-react';
+import { Clock as ClockIcon, LogIn, LogOut, Calendar as CalendarIcon, Plus, Loader2, Users, Activity, Search, Edit, UserPlus } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
 import { format } from 'date-fns';
-import { collection, query, where, getDocs, addDoc, updateDoc, doc, serverTimestamp, orderBy, Timestamp } from 'firebase/firestore';
+import { collection, query, where, getDocs, getDoc, addDoc, updateDoc, doc, serverTimestamp, orderBy, Timestamp } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { Pagination, PaginationContent, PaginationItem, PaginationLink, PaginationNext, PaginationPrevious, PaginationEllipsis } from '@/components/ui/pagination';
 
 interface TimeEntry {
   id: string;
@@ -37,6 +40,18 @@ interface ActiveUser {
   userEmail: string;
   clockInTime: Date;
   entryId: string;
+}
+
+interface MergedTimeEntry {
+  userId: string;
+  userName: string;
+  userEmail: string;
+  date: Date;
+  firstClockIn: Date | null;
+  lastClockOut: Date | null;
+  totalHours: number;
+  sessionCount: number;
+  isActive: boolean;
 }
 
 interface FirestoreTimeEntry {
@@ -77,6 +92,27 @@ const Clock = () => {
   const [activeUsers, setActiveUsers] = useState<ActiveUser[]>([]);
   const [loadingAdmin, setLoadingAdmin] = useState(false);
   const [adminSelectedDate, setAdminSelectedDate] = useState<Date | undefined>(new Date());
+  const [searchQuery, setSearchQuery] = useState('');
+  const [sortOrder, setSortOrder] = useState<'most' | 'least' | 'none'>('none');
+  const [selectedMonth, setSelectedMonth] = useState<string>('all');
+  const [individualEntriesPage, setIndividualEntriesPage] = useState(1);
+  const [mergedEntriesPage, setMergedEntriesPage] = useState(1);
+  const [sessionDetailsOpen, setSessionDetailsOpen] = useState(false);
+  const [selectedUserSessions, setSelectedUserSessions] = useState<TimeEntry[]>([]);
+  const [selectedUserInfo, setSelectedUserInfo] = useState<{ name: string; email: string; date: Date } | null>(null);
+  
+  // Admin edit states
+  const [editEntryOpen, setEditEntryOpen] = useState(false);
+  const [editingEntry, setEditingEntry] = useState<TimeEntry | null>(null);
+  const [editingSessionNumber, setEditingSessionNumber] = useState<number | null>(null);
+  const [editClockIn, setEditClockIn] = useState('');
+  const [editClockOut, setEditClockOut] = useState('');
+  const [editDate, setEditDate] = useState<Date>(new Date());
+  
+  // Admin clock in/out for other users
+  const [clockUserDialogOpen, setClockUserDialogOpen] = useState(false);
+  const [selectedUserForClock, setSelectedUserForClock] = useState<{ id: string; name: string; email: string } | null>(null);
+  const [allUsers, setAllUsers] = useState<any[]>([]);
 
   useEffect(() => {
     // Update current time every second
@@ -418,6 +454,478 @@ const Clock = () => {
     return format(date, 'MMM dd, yyyy');
   };
 
+  // Function to show session details for a user
+  const handleShowSessions = (userId: string, userName: string, userEmail: string, date: Date) => {
+    // Filter entries for this specific user and date
+    const userSessions = allUsersEntries.filter(entry => {
+      const entryDate = format(entry.date, 'yyyy-MM-dd');
+      const targetDate = format(date, 'yyyy-MM-dd');
+      return entry.userId === userId && entryDate === targetDate;
+    });
+    
+    // Sort by clock in time
+    userSessions.sort((a, b) => {
+      if (!a.clockIn || !b.clockIn) return 0;
+      return a.clockIn.getTime() - b.clockIn.getTime();
+    });
+    
+    setSelectedUserSessions(userSessions);
+    setSelectedUserInfo({ name: userName, email: userEmail, date });
+    setSessionDetailsOpen(true);
+  };
+
+  // Function to open edit dialog for an entry
+  const handleEditEntry = (entry: TimeEntry, sessionNumber?: number) => {
+    setEditingEntry(entry);
+    setEditingSessionNumber(sessionNumber || null);
+    setEditDate(entry.date);
+    
+    // Format times for input fields (HH:MM format)
+    if (entry.clockIn) {
+      const hours = entry.clockIn.getHours().toString().padStart(2, '0');
+      const minutes = entry.clockIn.getMinutes().toString().padStart(2, '0');
+      setEditClockIn(`${hours}:${minutes}`);
+    } else {
+      setEditClockIn('');
+    }
+    
+    if (entry.clockOut) {
+      const hours = entry.clockOut.getHours().toString().padStart(2, '0');
+      const minutes = entry.clockOut.getMinutes().toString().padStart(2, '0');
+      setEditClockOut(`${hours}:${minutes}`);
+    } else {
+      setEditClockOut('');
+    }
+    
+    setEditEntryOpen(true);
+  };
+
+  // Function to save edited entry
+  const handleSaveEdit = async () => {
+    if (!editingEntry || !user || user.role !== 'admin') return;
+
+    if (!editClockIn) {
+      toast({
+        title: 'Error',
+        description: 'Clock in time is required',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+
+      const entryDate = new Date(editDate);
+      entryDate.setHours(0, 0, 0, 0);
+
+      // Parse times
+      const [clockInHour, clockInMin] = editClockIn.split(':').map(Number);
+      const clockIn = new Date(entryDate);
+      clockIn.setHours(clockInHour, clockInMin, 0, 0);
+
+      let clockOut: Date | null = null;
+      let totalHours: number | null = null;
+
+      if (editClockOut) {
+        const [clockOutHour, clockOutMin] = editClockOut.split(':').map(Number);
+        clockOut = new Date(entryDate);
+        clockOut.setHours(clockOutHour, clockOutMin, 0, 0);
+
+        if (clockOut <= clockIn) {
+          toast({
+            title: 'Error',
+            description: 'Clock out time must be after clock in time',
+            variant: 'destructive',
+          });
+          return;
+        }
+
+        totalHours = (clockOut.getTime() - clockIn.getTime()) / (1000 * 60 * 60);
+      }
+
+      const dateString = format(entryDate, 'yyyy-MM-dd');
+
+      await updateDoc(doc(db, 'timeEntries', editingEntry.id), {
+        date: Timestamp.fromDate(entryDate),
+        dateString: dateString,
+        clockIn: Timestamp.fromDate(clockIn),
+        clockOut: clockOut ? Timestamp.fromDate(clockOut) : null,
+        totalHours: totalHours ? Math.round(totalHours * 100) / 100 : null,
+        updatedAt: serverTimestamp(),
+      });
+
+      toast({
+        title: 'Success',
+        description: 'Time entry updated successfully',
+      });
+
+      setEditEntryOpen(false);
+      setEditingEntry(null);
+      setEditingSessionNumber(null);
+      setEditClockIn('');
+      setEditClockOut('');
+      await loadAllUsersEntries();
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error.message || 'Failed to update entry',
+        variant: 'destructive',
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // Function to clock in/out for another user
+  const handleClockUser = async (action: 'in' | 'out') => {
+    if (!selectedUserForClock || !user || user.role !== 'admin') return;
+
+    try {
+      setSubmitting(true);
+      const now = new Date();
+      const today = new Date(now);
+      today.setHours(0, 0, 0, 0);
+      const dateString = format(today, 'yyyy-MM-dd');
+
+      if (action === 'in') {
+        // Check if user is already clocked in
+        const q = query(
+          collection(db, 'timeEntries'),
+          where('userId', '==', selectedUserForClock.id),
+          where('dateString', '==', dateString)
+        );
+
+        const querySnapshot = await getDocs(q);
+        const activeEntry = querySnapshot.docs.find(doc => {
+          try {
+            const data = getTimeEntryData(doc.data());
+            return data.clockIn && !data.clockOut;
+          } catch {
+            return false;
+          }
+        });
+
+        if (activeEntry) {
+          toast({
+            title: 'Already Clocked In',
+            description: 'User is already clocked in. Please clock out first.',
+            variant: 'destructive',
+          });
+          return;
+        }
+
+        await addDoc(collection(db, 'timeEntries'), {
+          userId: selectedUserForClock.id,
+          date: Timestamp.fromDate(today),
+          dateString: dateString,
+          clockIn: Timestamp.fromDate(now),
+          clockOut: null,
+          totalHours: null,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+
+        toast({
+          title: 'Success',
+          description: `Clocked in ${selectedUserForClock.name} at ${format(now, 'h:mm a')}`,
+        });
+      } else {
+        // Clock out - find active entry
+        const q = query(
+          collection(db, 'timeEntries'),
+          where('userId', '==', selectedUserForClock.id),
+          where('dateString', '==', dateString)
+        );
+
+        const querySnapshot = await getDocs(q);
+        const activeEntryDoc = querySnapshot.docs.find(doc => {
+          try {
+            const data = getTimeEntryData(doc.data());
+            return data.clockIn && !data.clockOut;
+          } catch {
+            return false;
+          }
+        });
+
+        if (!activeEntryDoc) {
+          toast({
+            title: 'Error',
+            description: 'User is not currently clocked in',
+            variant: 'destructive',
+          });
+          return;
+        }
+
+        const entry = getTimeEntryData(activeEntryDoc.data());
+        const clockInTime = entry.clockIn!.toDate();
+        const totalHours = (now.getTime() - clockInTime.getTime()) / (1000 * 60 * 60);
+
+        await updateDoc(doc(db, 'timeEntries', activeEntryDoc.id), {
+          clockOut: Timestamp.fromDate(now),
+          totalHours: Math.round(totalHours * 100) / 100,
+          updatedAt: serverTimestamp(),
+        });
+
+        toast({
+          title: 'Success',
+          description: `Clocked out ${selectedUserForClock.name} at ${format(now, 'h:mm a')}. Total hours: ${Math.round(totalHours * 100) / 100}h`,
+        });
+      }
+
+      setClockUserDialogOpen(false);
+      setSelectedUserForClock(null);
+      await loadAllUsersEntries();
+      await loadActiveUsers();
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error.message || `Failed to clock ${action === 'in' ? 'in' : 'out'}`,
+        variant: 'destructive',
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // Function to clock out a user by entry ID (for active users)
+  const handleClockOutByEntry = async (entryId: string, userId: string, userName: string) => {
+    if (!user || user.role !== 'admin') return;
+
+    try {
+      setSubmitting(true);
+      const now = new Date();
+      
+      const entryDoc = await getDoc(doc(db, 'timeEntries', entryId));
+      if (!entryDoc.exists()) {
+        toast({
+          title: 'Error',
+          description: 'Entry not found',
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      const entry = getTimeEntryData(entryDoc.data());
+      if (!entry.clockIn) {
+        toast({
+          title: 'Error',
+          description: 'No clock in time found',
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      const clockInTime = entry.clockIn.toDate();
+      const totalHours = (now.getTime() - clockInTime.getTime()) / (1000 * 60 * 60);
+
+      await updateDoc(doc(db, 'timeEntries', entryId), {
+        clockOut: Timestamp.fromDate(now),
+        totalHours: Math.round(totalHours * 100) / 100,
+        updatedAt: serverTimestamp(),
+      });
+
+      toast({
+        title: 'Success',
+        description: `Clocked out ${userName} at ${format(now, 'h:mm a')}. Total hours: ${Math.round(totalHours * 100) / 100}h`,
+      });
+
+      await loadAllUsersEntries();
+      await loadActiveUsers();
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error.message || 'Failed to clock out',
+        variant: 'destructive',
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // Function to clock in a user by user ID
+  const handleClockInUser = async (userId: string, userName: string) => {
+    if (!user || user.role !== 'admin') return;
+
+    try {
+      setSubmitting(true);
+      const now = new Date();
+      const today = new Date(now);
+      today.setHours(0, 0, 0, 0);
+      const dateString = format(today, 'yyyy-MM-dd');
+
+      // Check if user is already clocked in
+      const q = query(
+        collection(db, 'timeEntries'),
+        where('userId', '==', userId),
+        where('dateString', '==', dateString)
+      );
+
+      const querySnapshot = await getDocs(q);
+      const activeEntry = querySnapshot.docs.find(doc => {
+        try {
+          const data = getTimeEntryData(doc.data());
+          return data.clockIn && !data.clockOut;
+        } catch {
+          return false;
+        }
+      });
+
+      if (activeEntry) {
+        toast({
+          title: 'Already Clocked In',
+          description: 'User is already clocked in. Please clock out first.',
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      await addDoc(collection(db, 'timeEntries'), {
+        userId: userId,
+        date: Timestamp.fromDate(today),
+        dateString: dateString,
+        clockIn: Timestamp.fromDate(now),
+        clockOut: null,
+        totalHours: null,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+
+      toast({
+        title: 'Success',
+        description: `Clocked in ${userName} at ${format(now, 'h:mm a')}`,
+      });
+
+      await loadAllUsersEntries();
+      await loadActiveUsers();
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error.message || 'Failed to clock in',
+        variant: 'destructive',
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // Function to clock out a user by user ID
+  const handleClockOutUser = async (userId: string, userName: string) => {
+    if (!user || user.role !== 'admin') return;
+
+    try {
+      setSubmitting(true);
+      const now = new Date();
+      const today = new Date(now);
+      today.setHours(0, 0, 0, 0);
+      const dateString = format(today, 'yyyy-MM-dd');
+
+      // Find active entry
+      const q = query(
+        collection(db, 'timeEntries'),
+        where('userId', '==', userId),
+        where('dateString', '==', dateString)
+      );
+
+      const querySnapshot = await getDocs(q);
+      const activeEntryDoc = querySnapshot.docs.find(doc => {
+        try {
+          const data = getTimeEntryData(doc.data());
+          return data.clockIn && !data.clockOut;
+        } catch {
+          return false;
+        }
+      });
+
+      if (!activeEntryDoc) {
+        toast({
+          title: 'Error',
+          description: 'User is not currently clocked in',
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      const entry = getTimeEntryData(activeEntryDoc.data());
+      const clockInTime = entry.clockIn!.toDate();
+      const totalHours = (now.getTime() - clockInTime.getTime()) / (1000 * 60 * 60);
+
+      await updateDoc(doc(db, 'timeEntries', activeEntryDoc.id), {
+        clockOut: Timestamp.fromDate(now),
+        totalHours: Math.round(totalHours * 100) / 100,
+        updatedAt: serverTimestamp(),
+      });
+
+      toast({
+        title: 'Success',
+        description: `Clocked out ${userName} at ${format(now, 'h:mm a')}. Total hours: ${Math.round(totalHours * 100) / 100}h`,
+      });
+
+      await loadAllUsersEntries();
+      await loadActiveUsers();
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error.message || 'Failed to clock out',
+        variant: 'destructive',
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // Function to merge entries by user and date
+  const mergeEntriesByUserAndDate = (entries: TimeEntry[]): MergedTimeEntry[] => {
+    const mergedMap = new Map<string, MergedTimeEntry>();
+
+    entries.forEach((entry) => {
+      const key = `${entry.userId}-${format(entry.date, 'yyyy-MM-dd')}`;
+      
+      if (!mergedMap.has(key)) {
+        mergedMap.set(key, {
+          userId: entry.userId,
+          userName: entry.userName || 'Unknown',
+          userEmail: entry.userEmail || 'N/A',
+          date: entry.date,
+          firstClockIn: entry.clockIn,
+          lastClockOut: entry.clockOut,
+          totalHours: entry.totalHours || 0,
+          sessionCount: 1,
+          isActive: !entry.clockOut,
+        });
+      } else {
+        const merged = mergedMap.get(key)!;
+        
+        // Update first clock in (earliest)
+        if (entry.clockIn && (!merged.firstClockIn || entry.clockIn < merged.firstClockIn)) {
+          merged.firstClockIn = entry.clockIn;
+        }
+        
+        // Update last clock out (latest)
+        if (entry.clockOut && (!merged.lastClockOut || entry.clockOut > merged.lastClockOut)) {
+          merged.lastClockOut = entry.clockOut;
+        }
+        
+        // Add to total hours
+        merged.totalHours += entry.totalHours || 0;
+        
+        // Increment session count
+        merged.sessionCount += 1;
+        
+        // Update active status (if any entry is active, the merged entry is active)
+        if (!entry.clockOut) {
+          merged.isActive = true;
+        }
+      }
+    });
+
+    return Array.from(mergedMap.values()).sort((a, b) => {
+      const dateCompare = b.date.getTime() - a.date.getTime();
+      if (dateCompare !== 0) return dateCompare;
+      return (a.userName || '').localeCompare(b.userName || '');
+    });
+  };
+
   const loadAllUsersEntries = async () => {
     if (!user || user.role !== 'admin') return;
 
@@ -540,6 +1048,19 @@ const Clock = () => {
     }
   }, [user]);
 
+  // Load all users when clock user dialog opens
+  useEffect(() => {
+    if (clockUserDialogOpen && user?.role === 'admin') {
+      getAllUsers().then(setAllUsers);
+    }
+  }, [clockUserDialogOpen, user]);
+
+  // Reset pagination when filters change
+  useEffect(() => {
+    setIndividualEntriesPage(1);
+    setMergedEntriesPage(1);
+  }, [searchQuery, selectedMonth, adminSelectedDate]);
+
   const isAdmin = user?.role === 'admin';
 
   return (
@@ -551,13 +1072,28 @@ const Clock = () => {
             {isAdmin ? 'Manage and view all users\' time tracking' : 'Track your working hours'}
           </p>
         </div>
+        <div className="flex gap-2">
+          <Dialog open={openManualEntry} onOpenChange={setOpenManualEntry}>
+            <DialogTrigger asChild>
+              <Button variant="outline">
+                <Plus className="h-4 w-4 mr-2" />
+                Add Manual Entry
+              </Button>
+            </DialogTrigger>
+          </Dialog>
+          {isAdmin && (
+            <Dialog open={clockUserDialogOpen} onOpenChange={setClockUserDialogOpen}>
+              <DialogTrigger asChild>
+                <Button variant="outline">
+                  <UserPlus className="h-4 w-4 mr-2" />
+                  Clock User In/Out
+                </Button>
+              </DialogTrigger>
+            </Dialog>
+          )}
+        </div>
+        
         <Dialog open={openManualEntry} onOpenChange={setOpenManualEntry}>
-          <DialogTrigger asChild>
-            <Button variant="outline">
-              <Plus className="h-4 w-4 mr-2" />
-              Add Manual Entry
-            </Button>
-          </DialogTrigger>
           <DialogContent>
             <DialogHeader>
               <DialogTitle>Add Manual Time Entry</DialogTitle>
@@ -709,10 +1245,20 @@ const Clock = () => {
                         <span className="font-medium">{activeUser.userName}</span>
                       </div>
                       <p className="text-sm text-muted-foreground">{activeUser.userEmail}</p>
-                      <div className="mt-2 text-xs text-muted-foreground">
+                      <div className="mt-2 text-xs text-muted-foreground mb-3">
                         <p>Clocked in: {formatTime(activeUser.clockInTime)}</p>
                         <p>Active for: {Math.round(hoursActive * 100) / 100}h</p>
                       </div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleClockOutByEntry(activeUser.entryId, activeUser.userId, activeUser.userName)}
+                        disabled={submitting}
+                        className="w-full"
+                      >
+                        <LogOut className="h-3 w-3 mr-2" />
+                        Clock Out
+                      </Button>
                     </div>
                   );
                 })}
@@ -723,11 +1269,15 @@ const Clock = () => {
       )}
 
       {isAdmin ? (
-        <Tabs defaultValue="all-users" className="space-y-4">
+        <Tabs defaultValue="all-users-merged" className="space-y-4">
           <TabsList>
-            <TabsTrigger value="all-users">
+            <TabsTrigger value="all-users-individual">
               <Users className="h-4 w-4 mr-2" />
-              All Users
+              All Users - Individual
+            </TabsTrigger>
+            <TabsTrigger value="all-users-merged">
+              <Users className="h-4 w-4 mr-2" />
+              All Users - Merged
             </TabsTrigger>
             <TabsTrigger value="my-entries">
               <ClockIcon className="h-4 w-4 mr-2" />
@@ -735,14 +1285,14 @@ const Clock = () => {
             </TabsTrigger>
           </TabsList>
 
-          <TabsContent value="all-users" className="space-y-4">
-            <Card>
-              <CardHeader>
-                <div className="flex justify-between items-center">
-                  <div>
-                    <CardTitle>All Users Time Entries</CardTitle>
-                    <CardDescription>View clock in/out records for all users</CardDescription>
-                  </div>
+          <TabsContent value="all-users-individual" className="space-y-4">
+                <Card>
+                  <CardHeader>
+                    <div className="flex justify-between items-center mb-4">
+                      <div>
+                        <CardTitle className="mb-2">All Users Time Entries</CardTitle>
+                        <CardDescription>View individual clock in/out records for all users</CardDescription>
+                      </div>
                   <Popover>
                     <PopoverTrigger asChild>
                       <Button variant="outline" size="sm">
@@ -772,75 +1322,593 @@ const Clock = () => {
                     </PopoverContent>
                   </Popover>
                 </div>
+                <div className="mt-6 flex gap-4">
+                  <div className="relative flex-1">
+                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <Input
+                      type="text"
+                      placeholder="Search by name or email..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="pl-10"
+                    />
+                  </div>
+                  <Select value={sortOrder} onValueChange={(value: 'most' | 'least' | 'none') => setSortOrder(value)}>
+                    <SelectTrigger className="w-[200px]">
+                      <SelectValue placeholder="Sort by hours" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">No sorting</SelectItem>
+                      <SelectItem value="most">Most hours worked</SelectItem>
+                      <SelectItem value="least">Least hours worked</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Select value={selectedMonth} onValueChange={setSelectedMonth}>
+                    <SelectTrigger className="w-[200px]">
+                      <SelectValue placeholder="Filter by month" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All months</SelectItem>
+                      <SelectItem value="0">January</SelectItem>
+                      <SelectItem value="1">February</SelectItem>
+                      <SelectItem value="2">March</SelectItem>
+                      <SelectItem value="3">April</SelectItem>
+                      <SelectItem value="4">May</SelectItem>
+                      <SelectItem value="5">June</SelectItem>
+                      <SelectItem value="6">July</SelectItem>
+                      <SelectItem value="7">August</SelectItem>
+                      <SelectItem value="8">September</SelectItem>
+                      <SelectItem value="9">October</SelectItem>
+                      <SelectItem value="10">November</SelectItem>
+                      <SelectItem value="11">December</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
               </CardHeader>
               <CardContent>
                 {loadingAdmin ? (
                   <div className="flex items-center justify-center py-8">
                     <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
                   </div>
-                ) : allUsersEntries.length === 0 ? (
-                  <p className="text-sm text-muted-foreground text-center py-8">
-                    No time entries found for this date
-                  </p>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>User</TableHead>
-                          <TableHead>Email</TableHead>
-                          <TableHead>Date</TableHead>
-                          <TableHead>Clock In</TableHead>
-                          <TableHead>Clock Out</TableHead>
-                          <TableHead>Total Hours</TableHead>
-                          <TableHead>Status</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {allUsersEntries.map((entry) => (
-                          <TableRow key={entry.id}>
-                            <TableCell className="font-medium">
-                              {entry.userName || 'Unknown'}
-                            </TableCell>
-                            <TableCell className="text-sm text-muted-foreground">
-                              {entry.userEmail}
-                            </TableCell>
-                            <TableCell>{formatDate(entry.date)}</TableCell>
-                            <TableCell>{formatTime(entry.clockIn)}</TableCell>
-                            <TableCell>{formatTime(entry.clockOut)}</TableCell>
-                            <TableCell>
-                              {entry.totalHours ? (
-                                <Badge variant="outline">{entry.totalHours}h</Badge>
-                              ) : (
-                                <span className="text-muted-foreground">-</span>
-                              )}
-                            </TableCell>
-                            <TableCell>
-                              {entry.clockOut ? (
-                                <Badge variant="default">Completed</Badge>
-                              ) : (
-                                <Badge variant="secondary" className="flex items-center gap-1 w-fit">
-                                  <div className="h-1.5 w-1.5 rounded-full bg-green-500 animate-pulse" />
-                                  Active
-                                </Badge>
-                              )}
-                            </TableCell>
+                ) : (() => {
+                  let filteredEntries = allUsersEntries.filter((entry) => {
+                    // Search filter
+                    if (searchQuery.trim()) {
+                      const query = searchQuery.toLowerCase();
+                      const userName = (entry.userName || '').toLowerCase();
+                      const userEmail = (entry.userEmail || '').toLowerCase();
+                      if (!userName.includes(query) && !userEmail.includes(query)) {
+                        return false;
+                      }
+                    }
+                    
+                    // Month filter
+                    if (selectedMonth !== 'all') {
+                      const entryMonth = entry.date.getMonth().toString();
+                      if (entryMonth !== selectedMonth) {
+                        return false;
+                      }
+                    }
+                    
+                    return true;
+                  });
+
+                  // Sort by hours
+                  if (sortOrder === 'most') {
+                    filteredEntries = [...filteredEntries].sort((a, b) => {
+                      const hoursA = a.totalHours || 0;
+                      const hoursB = b.totalHours || 0;
+                      return hoursB - hoursA;
+                    });
+                  } else if (sortOrder === 'least') {
+                    filteredEntries = [...filteredEntries].sort((a, b) => {
+                      const hoursA = a.totalHours || 0;
+                      const hoursB = b.totalHours || 0;
+                      return hoursA - hoursB;
+                    });
+                  }
+
+                  // Pagination
+                  const itemsPerPage = 5;
+                  const totalPages = Math.ceil(filteredEntries.length / itemsPerPage);
+                  const startIndex = (individualEntriesPage - 1) * itemsPerPage;
+                  const endIndex = startIndex + itemsPerPage;
+                  const paginatedEntries = filteredEntries.slice(startIndex, endIndex);
+
+                  return filteredEntries.length === 0 ? (
+                    <p className="text-sm text-muted-foreground text-center py-8">
+                      {searchQuery || selectedMonth !== 'all' ? 'No time entries found matching your filters' : 'No time entries found for this date'}
+                    </p>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>User</TableHead>
+                            <TableHead>Email</TableHead>
+                            <TableHead>Date</TableHead>
+                            <TableHead>Clock In</TableHead>
+                            <TableHead>Clock Out</TableHead>
+                            <TableHead>Total Hours</TableHead>
+                            <TableHead>Status</TableHead>
+                            <TableHead>Actions</TableHead>
                           </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
-                )}
+                        </TableHeader>
+                        <TableBody>
+                          {paginatedEntries.map((entry) => (
+                            <TableRow key={entry.id}>
+                              <TableCell className="font-medium">
+                                {entry.userName || 'Unknown'}
+                              </TableCell>
+                              <TableCell className="text-sm text-muted-foreground">
+                                {entry.userEmail}
+                              </TableCell>
+                              <TableCell>{formatDate(entry.date)}</TableCell>
+                              <TableCell>{formatTime(entry.clockIn)}</TableCell>
+                              <TableCell>{formatTime(entry.clockOut)}</TableCell>
+                              <TableCell>
+                                {entry.totalHours ? (
+                                  <Badge variant="outline">{entry.totalHours}h</Badge>
+                                ) : (
+                                  <span className="text-muted-foreground">-</span>
+                                )}
+                              </TableCell>
+                              <TableCell>
+                                {entry.clockOut ? (
+                                  <Badge variant="default">Completed</Badge>
+                                ) : (
+                                  <Badge variant="secondary" className="flex items-center gap-1 w-fit">
+                                    <div className="h-1.5 w-1.5 rounded-full bg-green-500 animate-pulse" />
+                                    Active
+                                  </Badge>
+                                )}
+                              </TableCell>
+                              <TableCell>
+                                <TooltipProvider>
+                                  <div className="flex items-center gap-1">
+                                    <Tooltip>
+                                      <TooltipTrigger asChild>
+                                        <Button
+                                          variant="ghost"
+                                          size="sm"
+                                          onClick={() => handleEditEntry(entry)}
+                                          className="h-8 w-8 p-0"
+                                        >
+                                          <Edit className="h-4 w-4" />
+                                        </Button>
+                                      </TooltipTrigger>
+                                      <TooltipContent>
+                                        <p>Edit entry</p>
+                                      </TooltipContent>
+                                    </Tooltip>
+                                    {(() => {
+                                      const isUserActive = activeUsers.some(au => au.userId === entry.userId);
+                                      
+                                      if (isUserActive) {
+                                        return (
+                                          <Tooltip>
+                                            <TooltipTrigger asChild>
+                                              <Button
+                                                variant="ghost"
+                                                size="sm"
+                                                onClick={() => handleClockOutUser(entry.userId, entry.userName || 'User')}
+                                                disabled={submitting}
+                                                className="h-8 w-8 p-0"
+                                              >
+                                                <LogOut className="h-4 w-4" />
+                                              </Button>
+                                            </TooltipTrigger>
+                                            <TooltipContent>
+                                              <p>Clock out user</p>
+                                            </TooltipContent>
+                                          </Tooltip>
+                                        );
+                                      } else {
+                                        return (
+                                          <Tooltip>
+                                            <TooltipTrigger asChild>
+                                              <Button
+                                                variant="ghost"
+                                                size="sm"
+                                                onClick={() => handleClockInUser(entry.userId, entry.userName || 'User')}
+                                                disabled={submitting}
+                                                className="h-8 w-8 p-0"
+                                              >
+                                                <LogIn className="h-4 w-4" />
+                                              </Button>
+                                            </TooltipTrigger>
+                                            <TooltipContent>
+                                              <p>Clock in user</p>
+                                            </TooltipContent>
+                                          </Tooltip>
+                                        );
+                                      }
+                                    })()}
+                                  </div>
+                                </TooltipProvider>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                      {totalPages > 1 && (
+                        <div className="mt-4">
+                          <Pagination>
+                            <PaginationContent>
+                              <PaginationItem>
+                                <PaginationPrevious
+                                  href="#"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    if (individualEntriesPage > 1) {
+                                      setIndividualEntriesPage(individualEntriesPage - 1);
+                                    }
+                                  }}
+                                  className={individualEntriesPage === 1 ? 'pointer-events-none opacity-50' : 'cursor-pointer'}
+                                />
+                              </PaginationItem>
+                              {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => {
+                                if (
+                                  page === 1 ||
+                                  page === totalPages ||
+                                  (page >= individualEntriesPage - 1 && page <= individualEntriesPage + 1)
+                                ) {
+                                  return (
+                                    <PaginationItem key={page}>
+                                      <PaginationLink
+                                        href="#"
+                                        onClick={(e) => {
+                                          e.preventDefault();
+                                          setIndividualEntriesPage(page);
+                                        }}
+                                        isActive={individualEntriesPage === page}
+                                        className="cursor-pointer"
+                                      >
+                                        {page}
+                                      </PaginationLink>
+                                    </PaginationItem>
+                                  );
+                                } else if (page === individualEntriesPage - 2 || page === individualEntriesPage + 2) {
+                                  return (
+                                    <PaginationItem key={page}>
+                                      <PaginationEllipsis />
+                                    </PaginationItem>
+                                  );
+                                }
+                                return null;
+                              })}
+                              <PaginationItem>
+                                <PaginationNext
+                                  href="#"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    if (individualEntriesPage < totalPages) {
+                                      setIndividualEntriesPage(individualEntriesPage + 1);
+                                    }
+                                  }}
+                                  className={individualEntriesPage === totalPages ? 'pointer-events-none opacity-50' : 'cursor-pointer'}
+                                />
+                              </PaginationItem>
+                            </PaginationContent>
+                          </Pagination>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </CardContent>
             </Card>
+          </TabsContent>
+
+          <TabsContent value="all-users-merged" className="space-y-4">
+                <Card>
+                  <CardHeader>
+                    <div className="flex justify-between items-center mb-4">
+                      <div>
+                        <CardTitle className="mb-2">Merged Time Entries</CardTitle>
+                        <CardDescription>View merged clock in/out records grouped by user and date</CardDescription>
+                      </div>
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <Button variant="outline" size="sm">
+                            <CalendarIcon className="h-4 w-4 mr-2" />
+                            {adminSelectedDate ? format(adminSelectedDate, 'MMM dd, yyyy') : 'Today'}
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-auto p-0" align="end">
+                          <Calendar
+                            mode="single"
+                            selected={adminSelectedDate}
+                            onSelect={(date) => {
+                              setAdminSelectedDate(date || new Date());
+                            }}
+                            initialFocus
+                          />
+                          <div className="p-3 border-t">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="w-full"
+                              onClick={() => setAdminSelectedDate(new Date())}
+                            >
+                              Show Today
+                            </Button>
+                          </div>
+                        </PopoverContent>
+                      </Popover>
+                    </div>
+                    <div className="mt-6 flex gap-4">
+                      <div className="relative flex-1">
+                        <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                        <Input
+                          type="text"
+                          placeholder="Search by name or email..."
+                          value={searchQuery}
+                          onChange={(e) => setSearchQuery(e.target.value)}
+                          className="pl-10"
+                        />
+                      </div>
+                      <Select value={sortOrder} onValueChange={(value: 'most' | 'least' | 'none') => setSortOrder(value)}>
+                        <SelectTrigger className="w-[200px]">
+                          <SelectValue placeholder="Sort by hours" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="none">No sorting</SelectItem>
+                          <SelectItem value="most">Most hours worked</SelectItem>
+                          <SelectItem value="least">Least hours worked</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <Select value={selectedMonth} onValueChange={setSelectedMonth}>
+                        <SelectTrigger className="w-[200px]">
+                          <SelectValue placeholder="Filter by month" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">All months</SelectItem>
+                          <SelectItem value="0">January</SelectItem>
+                          <SelectItem value="1">February</SelectItem>
+                          <SelectItem value="2">March</SelectItem>
+                          <SelectItem value="3">April</SelectItem>
+                          <SelectItem value="4">May</SelectItem>
+                          <SelectItem value="5">June</SelectItem>
+                          <SelectItem value="6">July</SelectItem>
+                          <SelectItem value="7">August</SelectItem>
+                          <SelectItem value="8">September</SelectItem>
+                          <SelectItem value="9">October</SelectItem>
+                          <SelectItem value="10">November</SelectItem>
+                          <SelectItem value="11">December</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </CardHeader>
+                  <CardContent>
+                    {loadingAdmin ? (
+                      <div className="flex items-center justify-center py-8">
+                        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                      </div>
+                    ) : (() => {
+                      const mergedEntries = mergeEntriesByUserAndDate(allUsersEntries);
+                      
+                      let filteredEntries = mergedEntries.filter((entry) => {
+                        // Search filter
+                        if (searchQuery.trim()) {
+                          const query = searchQuery.toLowerCase();
+                          const userName = (entry.userName || '').toLowerCase();
+                          const userEmail = (entry.userEmail || '').toLowerCase();
+                          if (!userName.includes(query) && !userEmail.includes(query)) {
+                            return false;
+                          }
+                        }
+                        
+                        // Month filter
+                        if (selectedMonth !== 'all') {
+                          const entryMonth = entry.date.getMonth().toString();
+                          if (entryMonth !== selectedMonth) {
+                            return false;
+                          }
+                        }
+                        
+                        return true;
+                      });
+
+                      // Sort by hours
+                      if (sortOrder === 'most') {
+                        filteredEntries = [...filteredEntries].sort((a, b) => {
+                          return b.totalHours - a.totalHours;
+                        });
+                      } else if (sortOrder === 'least') {
+                        filteredEntries = [...filteredEntries].sort((a, b) => {
+                          return a.totalHours - b.totalHours;
+                        });
+                      }
+
+                      // Pagination
+                      const itemsPerPage = 5;
+                      const totalPages = Math.ceil(filteredEntries.length / itemsPerPage);
+                      const startIndex = (mergedEntriesPage - 1) * itemsPerPage;
+                      const endIndex = startIndex + itemsPerPage;
+                      const paginatedEntries = filteredEntries.slice(startIndex, endIndex);
+
+                      return filteredEntries.length === 0 ? (
+                        <p className="text-sm text-muted-foreground text-center py-8">
+                          {searchQuery || selectedMonth !== 'all' ? 'No merged entries found matching your filters' : 'No merged entries found for this date'}
+                        </p>
+                      ) : (
+                        <div className="overflow-x-auto">
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead>User</TableHead>
+                                <TableHead>Email</TableHead>
+                                <TableHead>Date</TableHead>
+                                <TableHead>First Clock In</TableHead>
+                                <TableHead>Last Clock Out</TableHead>
+                                <TableHead>Total Hours</TableHead>
+                                <TableHead>Sessions</TableHead>
+                                <TableHead>Status</TableHead>
+                                <TableHead>Actions</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {paginatedEntries.map((entry, index) => (
+                                <TableRow key={`${entry.userId}-${format(entry.date, 'yyyy-MM-dd')}-${index}`}>
+                                  <TableCell className="font-medium">
+                                    <button
+                                      onClick={() => handleShowSessions(entry.userId, entry.userName, entry.userEmail, entry.date)}
+                                      className="text-left hover:underline cursor-pointer text-primary"
+                                    >
+                                      {entry.userName || 'Unknown'}
+                                    </button>
+                                  </TableCell>
+                                  <TableCell className="text-sm text-muted-foreground">
+                                    {entry.userEmail}
+                                  </TableCell>
+                                  <TableCell>{formatDate(entry.date)}</TableCell>
+                                  <TableCell>{formatTime(entry.firstClockIn)}</TableCell>
+                                  <TableCell>{formatTime(entry.lastClockOut)}</TableCell>
+                                  <TableCell>
+                                    <Badge variant="outline">{Math.round(entry.totalHours * 100) / 100}h</Badge>
+                                  </TableCell>
+                                  <TableCell>
+                                    <Badge variant="secondary">{entry.sessionCount}</Badge>
+                                  </TableCell>
+                                  <TableCell>
+                                    {entry.isActive ? (
+                                      <Badge variant="secondary" className="flex items-center gap-1 w-fit">
+                                        <div className="h-1.5 w-1.5 rounded-full bg-green-500 animate-pulse" />
+                                        Active
+                                      </Badge>
+                                    ) : (
+                                      <Badge variant="default">Completed</Badge>
+                                    )}
+                                  </TableCell>
+                                  <TableCell>
+                                    <TooltipProvider>
+                                      <div className="flex items-center gap-1">
+                                        {(() => {
+                                          const isUserActive = activeUsers.some(au => au.userId === entry.userId);
+                                          
+                                          if (isUserActive) {
+                                            return (
+                                              <Tooltip>
+                                                <TooltipTrigger asChild>
+                                                  <Button
+                                                    variant="ghost"
+                                                    size="sm"
+                                                    onClick={() => handleClockOutUser(entry.userId, entry.userName || 'User')}
+                                                    disabled={submitting}
+                                                    className="h-8 w-8 p-0"
+                                                  >
+                                                    <LogOut className="h-4 w-4" />
+                                                  </Button>
+                                                </TooltipTrigger>
+                                                <TooltipContent>
+                                                  <p>Clock out user</p>
+                                                </TooltipContent>
+                                              </Tooltip>
+                                            );
+                                          } else {
+                                            return (
+                                              <Tooltip>
+                                                <TooltipTrigger asChild>
+                                                  <Button
+                                                    variant="ghost"
+                                                    size="sm"
+                                                    onClick={() => handleClockInUser(entry.userId, entry.userName || 'User')}
+                                                    disabled={submitting}
+                                                    className="h-8 w-8 p-0"
+                                                  >
+                                                    <LogIn className="h-4 w-4" />
+                                                  </Button>
+                                                </TooltipTrigger>
+                                                <TooltipContent>
+                                                  <p>Clock in user</p>
+                                                </TooltipContent>
+                                              </Tooltip>
+                                            );
+                                          }
+                                        })()}
+                                      </div>
+                                    </TooltipProvider>
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                          {totalPages > 1 && (
+                            <div className="mt-4">
+                              <Pagination>
+                                <PaginationContent>
+                                  <PaginationItem>
+                                    <PaginationPrevious
+                                      href="#"
+                                      onClick={(e) => {
+                                        e.preventDefault();
+                                        if (mergedEntriesPage > 1) {
+                                          setMergedEntriesPage(mergedEntriesPage - 1);
+                                        }
+                                      }}
+                                      className={mergedEntriesPage === 1 ? 'pointer-events-none opacity-50' : 'cursor-pointer'}
+                                    />
+                                  </PaginationItem>
+                                  {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => {
+                                    if (
+                                      page === 1 ||
+                                      page === totalPages ||
+                                      (page >= mergedEntriesPage - 1 && page <= mergedEntriesPage + 1)
+                                    ) {
+                                      return (
+                                        <PaginationItem key={page}>
+                                          <PaginationLink
+                                            href="#"
+                                            onClick={(e) => {
+                                              e.preventDefault();
+                                              setMergedEntriesPage(page);
+                                            }}
+                                            isActive={mergedEntriesPage === page}
+                                            className="cursor-pointer"
+                                          >
+                                            {page}
+                                          </PaginationLink>
+                                        </PaginationItem>
+                                      );
+                                    } else if (page === mergedEntriesPage - 2 || page === mergedEntriesPage + 2) {
+                                      return (
+                                        <PaginationItem key={page}>
+                                          <PaginationEllipsis />
+                                        </PaginationItem>
+                                      );
+                                    }
+                                    return null;
+                                  })}
+                                  <PaginationItem>
+                                    <PaginationNext
+                                      href="#"
+                                      onClick={(e) => {
+                                        e.preventDefault();
+                                        if (mergedEntriesPage < totalPages) {
+                                          setMergedEntriesPage(mergedEntriesPage + 1);
+                                        }
+                                      }}
+                                      className={mergedEntriesPage === totalPages ? 'pointer-events-none opacity-50' : 'cursor-pointer'}
+                                    />
+                                  </PaginationItem>
+                                </PaginationContent>
+                              </Pagination>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+                  </CardContent>
+                </Card>
           </TabsContent>
 
           <TabsContent value="my-entries">
             <Card>
               <CardHeader>
-                <div className="flex justify-between items-center">
+                <div className="flex justify-between items-center mb-4">
                   <div>
-                    <CardTitle>My Time Entries</CardTitle>
+                    <CardTitle className="mb-2">My Time Entries</CardTitle>
                     <CardDescription>Your clock in/out history</CardDescription>
                   </div>
                   <Popover>
@@ -927,9 +1995,9 @@ const Clock = () => {
       ) : (
         <Card>
           <CardHeader>
-            <div className="flex justify-between items-center">
+            <div className="flex justify-between items-center mb-4">
               <div>
-                <CardTitle>Time Entries</CardTitle>
+                <CardTitle className="mb-2">Time Entries</CardTitle>
                 <CardDescription>Your clock in/out history</CardDescription>
               </div>
               <Popover>
@@ -1012,6 +2080,260 @@ const Clock = () => {
           </CardContent>
         </Card>
       )}
+
+      {/* Edit Entry Dialog */}
+      <Dialog open={editEntryOpen} onOpenChange={(open) => {
+        setEditEntryOpen(open);
+        if (!open) {
+          setEditingEntry(null);
+          setEditingSessionNumber(null);
+          setEditClockIn('');
+          setEditClockOut('');
+        }
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              Edit Time Entry
+              {editingSessionNumber && ` - Session ${editingSessionNumber}`}
+            </DialogTitle>
+            <DialogDescription>
+              {editingEntry && `Edit clock in/out times for ${editingEntry.userName || 'user'}`}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>Date</Label>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    className="w-full justify-start text-left font-normal"
+                  >
+                    <CalendarIcon className="mr-2 h-4 w-4" />
+                    {editDate ? format(editDate, 'PPP') : 'Pick a date'}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-auto p-0" align="start">
+                  <Calendar
+                    mode="single"
+                    selected={editDate}
+                    onSelect={(date) => date && setEditDate(date)}
+                    initialFocus
+                  />
+                </PopoverContent>
+              </Popover>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="editClockIn">Clock In Time (HH:MM)</Label>
+              <Input
+                id="editClockIn"
+                type="time"
+                value={editClockIn}
+                onChange={(e) => setEditClockIn(e.target.value)}
+                required
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="editClockOut">Clock Out Time (HH:MM) - Optional</Label>
+              <Input
+                id="editClockOut"
+                type="time"
+                value={editClockOut}
+                onChange={(e) => setEditClockOut(e.target.value)}
+              />
+            </div>
+            <div className="flex gap-2">
+              <Button
+                onClick={handleSaveEdit}
+                className="flex-1"
+                disabled={submitting}
+              >
+                {submitting ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Saving...
+                  </>
+                ) : (
+                  'Save Changes'
+                )}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setEditEntryOpen(false);
+                  setEditingEntry(null);
+                  setEditingSessionNumber(null);
+                  setEditClockIn('');
+                  setEditClockOut('');
+                }}
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Clock User In/Out Dialog */}
+      <Dialog open={clockUserDialogOpen} onOpenChange={setClockUserDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Clock User In/Out</DialogTitle>
+            <DialogDescription>
+              Clock in or clock out a user
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>Select User</Label>
+              <Select
+                value={selectedUserForClock?.id || ''}
+                onValueChange={(userId) => {
+                  const selectedUser = allUsers.find(u => u.id === userId);
+                  if (selectedUser) {
+                    setSelectedUserForClock({
+                      id: selectedUser.id,
+                      name: selectedUser.name || `${selectedUser.firstName || ''} ${selectedUser.lastName || ''}`.trim() || selectedUser.email,
+                      email: selectedUser.email,
+                    });
+                  }
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a user" />
+                </SelectTrigger>
+                <SelectContent>
+                  {allUsers.map((u) => (
+                    <SelectItem key={u.id} value={u.id}>
+                      {u.name || `${u.firstName || ''} ${u.lastName || ''}`.trim() || u.email} ({u.email})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {selectedUserForClock && (
+              <div className="space-y-2">
+                <Label>Actions</Label>
+                <div className="flex gap-2">
+                  <Button
+                    onClick={() => handleClockUser('in')}
+                    className="flex-1"
+                    disabled={submitting}
+                  >
+                    <LogIn className="h-4 w-4 mr-2" />
+                    Clock In
+                  </Button>
+                  <Button
+                    onClick={() => handleClockUser('out')}
+                    variant="outline"
+                    className="flex-1"
+                    disabled={submitting}
+                  >
+                    <LogOut className="h-4 w-4 mr-2" />
+                    Clock Out
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Session Details Dialog */}
+      <Dialog open={sessionDetailsOpen} onOpenChange={setSessionDetailsOpen}>
+        <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Session Details</DialogTitle>
+            <DialogDescription>
+              {selectedUserInfo && (
+                <>
+                  Individual clock in/out sessions for <strong>{selectedUserInfo.name}</strong> on {formatDate(selectedUserInfo.date)}
+                  <br />
+                  <span className="text-xs text-muted-foreground">{selectedUserInfo.email}</span>
+                </>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="mt-4">
+            {selectedUserSessions.length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-4">
+                No sessions found
+              </p>
+            ) : (
+              <div className="space-y-4">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Session #</TableHead>
+                      <TableHead>Clock In</TableHead>
+                      <TableHead>Clock Out</TableHead>
+                      <TableHead>Hours</TableHead>
+                      <TableHead>Status</TableHead>
+                      {isAdmin && <TableHead>Actions</TableHead>}
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {selectedUserSessions.map((session, index) => (
+                      <TableRow key={session.id}>
+                        <TableCell className="font-medium">
+                          Session {index + 1}
+                        </TableCell>
+                        <TableCell>{formatTime(session.clockIn)}</TableCell>
+                        <TableCell>{formatTime(session.clockOut)}</TableCell>
+                        <TableCell>
+                          {session.totalHours ? (
+                            <Badge variant="outline">{session.totalHours}h</Badge>
+                          ) : (
+                            <span className="text-muted-foreground">-</span>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {session.clockOut ? (
+                            <Badge variant="default">Completed</Badge>
+                          ) : (
+                            <Badge variant="secondary" className="flex items-center gap-1 w-fit">
+                              <div className="h-1.5 w-1.5 rounded-full bg-green-500 animate-pulse" />
+                              Active
+                            </Badge>
+                          )}
+                        </TableCell>
+                        {isAdmin && (
+                          <TableCell>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => {
+                                setSessionDetailsOpen(false);
+                                handleEditEntry(session, index + 1);
+                              }}
+                              className="h-8 w-8 p-0"
+                            >
+                              <Edit className="h-4 w-4" />
+                            </Button>
+                          </TableCell>
+                        )}
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+                <div className="pt-4 border-t">
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="text-muted-foreground">Total Sessions:</span>
+                    <Badge variant="secondary">{selectedUserSessions.length}</Badge>
+                  </div>
+                  <div className="flex justify-between items-center text-sm mt-2">
+                    <span className="text-muted-foreground">Total Hours:</span>
+                    <Badge variant="outline">
+                      {Math.round(selectedUserSessions.reduce((sum, s) => sum + (s.totalHours || 0), 0) * 100) / 100}h
+                    </Badge>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
