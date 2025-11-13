@@ -28,28 +28,12 @@ import {
   FileText,
   LogOut,
   Settings,
-<<<<<<< HEAD
-<<<<<<< HEAD
   User
-=======
-  CheckSquare
->>>>>>> 97d6a264cdcc331665c968d47e2cffb5923fb5b7
-=======
-  CheckSquare
->>>>>>> 97d6a264cdcc331665c968d47e2cffb5923fb5b7
 } from 'lucide-react';
 
 const menuItems = [
   { title: 'Dashboard', url: '/dashboard', icon: LayoutDashboard, roles: ['admin', 'operationsstaff', 'itteam'] },
-<<<<<<< HEAD
-<<<<<<< HEAD
   { title: 'Profile', url: '/profile', icon: User, roles: ['admin', 'operationsstaff', 'itteam'] },
-=======
-  { title: 'Tasks', url: '/tasks', icon: CheckSquare, roles: ['admin', 'operationsstaff', 'itteam'] },
->>>>>>> 97d6a264cdcc331665c968d47e2cffb5923fb5b7
-=======
-  { title: 'Tasks', url: '/tasks', icon: CheckSquare, roles: ['admin', 'operationsstaff', 'itteam'] },
->>>>>>> 97d6a264cdcc331665c968d47e2cffb5923fb5b7
   { title: 'Clock In/Out', url: '/clock', icon: ClockIcon, roles: ['admin', 'operationsstaff', 'itteam'] },
   { title: 'Employee Ratings', url: '/ratings', icon: Star, roles: ['admin', 'operationsstaff'] },
   { title: 'Lead Tracking', url: '/leads', icon: Users, roles: ['admin', 'operationsstaff', 'itteam'] },
