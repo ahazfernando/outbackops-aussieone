@@ -300,6 +300,57 @@ export async function getTasksByStatus(status: TaskStatus): Promise<Task[]> {
 }
 
 /**
+ * Get completed tasks (for task history)
+ */
+export async function getCompletedTasks(): Promise<Task[]> {
+  return getTasksByStatus('Complete');
+}
+
+/**
+ * Get completed tasks assigned to a specific user
+ */
+export async function getCompletedTasksByUser(userId: string): Promise<Task[]> {
+  if (!db) {
+    throw new Error('Firebase is not initialized. Please check your environment variables.');
+  }
+  try {
+    const q = query(
+      collection(db, 'tasks'),
+      where('status', '==', 'Complete'),
+      where('assignedMembers', 'array-contains', userId)
+    );
+    const querySnapshot = await getDocs(q);
+    
+    const tasks = querySnapshot.docs.map(doc => 
+      convertFirestoreTask(doc.data(), doc.id)
+    );
+    
+    // Sort by updatedAt descending (most recently completed first)
+    return tasks.sort((a, b) => {
+      // Get the completion timestamp from status history
+      const aCompleted = a.statusHistory?.find(h => h.status === 'Complete')?.timestamp || a.updatedAt;
+      const bCompleted = b.statusHistory?.find(h => h.status === 'Complete')?.timestamp || b.updatedAt;
+      return bCompleted.getTime() - aCompleted.getTime();
+    });
+  } catch (error: any) {
+    // Fallback: fetch all completed tasks and filter in memory
+    if (error.code === 'failed-precondition') {
+      console.warn('Composite index missing. Fetching all completed tasks and filtering...');
+      const allCompleted = await getCompletedTasks();
+      return allCompleted
+        .filter(task => task.assignedMembers.includes(userId))
+        .sort((a, b) => {
+          const aCompleted = a.statusHistory?.find(h => h.status === 'Complete')?.timestamp || a.updatedAt;
+          const bCompleted = b.statusHistory?.find(h => h.status === 'Complete')?.timestamp || b.updatedAt;
+          return bCompleted.getTime() - aCompleted.getTime();
+        });
+    }
+    console.error('Error fetching completed user tasks:', error);
+    throw error;
+  }
+}
+
+/**
  * Delete a task
  */
 export async function deleteTask(taskId: string): Promise<void> {

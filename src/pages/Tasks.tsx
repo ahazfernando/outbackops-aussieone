@@ -151,6 +151,24 @@ const Tasks = () => {
   }, [tasks, searchQuery, dateRange]);
 
   const getTasksByStatus = (status: TaskStatus): Task[] => {
+    if (status === 'Complete') {
+      // For completed tasks, only show those completed within the last 24 hours
+      const now = new Date();
+      const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+      
+      return filteredTasks.filter(task => {
+        if (task.status !== 'Complete') return false;
+        
+        // Get completion date from status history
+        const completedEntry = task.statusHistory?.find(h => h.status === 'Complete');
+        const completionDate = completedEntry?.timestamp || task.updatedAt;
+        
+        // Only show if completed within the last 24 hours
+        return completionDate >= oneDayAgo;
+      });
+    }
+    
+    // For other statuses, filter normally
     return filteredTasks.filter(task => task.status === status);
   };
 
