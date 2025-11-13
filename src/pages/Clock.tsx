@@ -1338,13 +1338,13 @@ const Clock = () => {
       {isAdmin ? (
         <Tabs defaultValue="all-users-merged" className="space-y-4">
           <TabsList>
-            <TabsTrigger value="all-users-individual">
+            {/* <TabsTrigger value="all-users-individual">
               <Users className="h-4 w-4 mr-2" />
               All Users - Individual
-            </TabsTrigger>
+            </TabsTrigger> */}
             <TabsTrigger value="all-users-merged">
               <Users className="h-4 w-4 mr-2" />
-              All Users - Merged
+              All Users
             </TabsTrigger>
             <TabsTrigger value="my-entries">
               <ClockIcon className="h-4 w-4 mr-2" />
@@ -1352,7 +1352,7 @@ const Clock = () => {
             </TabsTrigger>
           </TabsList>
 
-          <TabsContent value="all-users-individual" className="space-y-4">
+          {/* <TabsContent value="all-users-individual" className="space-y-4">
                 <Card>
                   <CardHeader>
                     <div className="flex justify-between items-center mb-4">
@@ -1665,7 +1665,7 @@ const Clock = () => {
                 })()}
               </CardContent>
             </Card>
-          </TabsContent>
+          </TabsContent> */}
 
           <TabsContent value="all-users-merged" className="space-y-4">
                 <Card>
