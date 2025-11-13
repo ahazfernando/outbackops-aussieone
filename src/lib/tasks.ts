@@ -1,11 +1,31 @@
-import { collection, addDoc, updateDoc, doc, getDocs, query, where, orderBy, Timestamp, deleteDoc } from 'firebase/firestore';
+import { collection, addDoc, updateDoc, doc, getDocs, query, where, orderBy, Timestamp, deleteDoc, getDoc } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
-import { Task, FirestoreTask, TaskStatus } from '@/types/task';
+import { Task, FirestoreTask, TaskStatus, StatusChange, TaskImage } from '@/types/task';
 
 /**
  * Convert Firestore task to app Task
  */
 export function convertFirestoreTask(docData: any, docId: string): Task {
+  const statusHistory: StatusChange[] = docData.statusHistory
+    ? docData.statusHistory.map((entry: any) => ({
+        status: entry.status,
+        timestamp: entry.timestamp?.toDate() || new Date(),
+        changedBy: entry.changedBy,
+        changedByName: entry.changedByName,
+      }))
+    : [];
+
+  // Normalize images: convert strings to objects for backward compatibility
+  const images: (string | TaskImage)[] = (docData.images || []).map((img: any) => {
+    if (typeof img === 'string') {
+      return img; // Keep as string for backward compatibility
+    }
+    return {
+      url: img.url || '',
+      description: img.description || '',
+    };
+  });
+
   return {
     id: docId,
     taskId: docData.taskId || '',
@@ -15,11 +35,15 @@ export function convertFirestoreTask(docData: any, docId: string): Task {
     status: docData.status || 'New',
     assignedMembers: docData.assignedMembers || [],
     assignedMemberNames: docData.assignedMemberNames || [],
-    images: docData.images || [],
+    images,
+    kpi: docData.kpi || '',
+    eta: docData.eta?.toDate() || undefined,
+    time: docData.time || '',
     createdAt: docData.createdAt?.toDate() || new Date(),
     updatedAt: docData.updatedAt?.toDate() || new Date(),
     createdBy: docData.createdBy || '',
     createdByName: docData.createdByName || '',
+    statusHistory: statusHistory.length > 0 ? statusHistory : undefined,
   };
 }
 
@@ -33,7 +57,10 @@ export async function createTask(taskData: {
   date: Date;
   assignedMembers: string[];
   assignedMemberNames: string[];
-  images: string[];
+  images: (string | TaskImage)[];
+  kpi?: string;
+  eta?: Date;
+  time?: string;
   createdBy: string;
   createdByName: string;
 }): Promise<string> {
@@ -41,6 +68,14 @@ export async function createTask(taskData: {
     throw new Error('Firebase is not initialized. Please check your environment variables.');
   }
   try {
+    const now = Timestamp.now();
+    const initialStatusHistory = [{
+      status: 'New' as TaskStatus,
+      timestamp: now,
+      changedBy: taskData.createdBy,
+      changedByName: taskData.createdByName,
+    }];
+
     const docRef = await addDoc(collection(db, 'tasks'), {
       taskId: taskData.taskId,
       name: taskData.name,
@@ -50,10 +85,14 @@ export async function createTask(taskData: {
       assignedMembers: taskData.assignedMembers,
       assignedMemberNames: taskData.assignedMemberNames,
       images: taskData.images,
-      createdAt: Timestamp.now(),
-      updatedAt: Timestamp.now(),
+      kpi: taskData.kpi || '',
+      eta: taskData.eta ? Timestamp.fromDate(taskData.eta) : null,
+      time: taskData.time || '',
+      createdAt: now,
+      updatedAt: now,
       createdBy: taskData.createdBy,
       createdByName: taskData.createdByName,
+      statusHistory: initialStatusHistory,
     });
 
     return docRef.id;
@@ -66,15 +105,54 @@ export async function createTask(taskData: {
 /**
  * Update task status
  */
-export async function updateTaskStatus(taskId: string, status: TaskStatus): Promise<void> {
+export async function updateTaskStatus(
+  taskId: string,
+  status: TaskStatus,
+  options?: {
+    changedBy?: string;
+    changedByName?: string;
+  }
+): Promise<void> {
   if (!db) {
     throw new Error('Firebase is not initialized. Please check your environment variables.');
   }
   try {
-    await updateDoc(doc(db, 'tasks', taskId), {
-      status,
-      updatedAt: Timestamp.now(),
-    });
+    // Get current task to check if status is actually changing
+    const taskDoc = await getDoc(doc(db, 'tasks', taskId));
+    if (!taskDoc.exists()) {
+      throw new Error('Task not found');
+    }
+
+    const currentData = taskDoc.data();
+    const currentStatus = currentData.status as TaskStatus;
+    
+    // Only track if status is actually changing
+    if (currentStatus !== status) {
+      const now = Timestamp.now();
+      const statusChange = {
+        status,
+        timestamp: now,
+        changedBy: options?.changedBy,
+        changedByName: options?.changedByName,
+      };
+
+      // Get existing status history or initialize empty array
+      const existingHistory = currentData.statusHistory || [];
+      
+      // Add new status change to history
+      const updatedHistory = [...existingHistory, statusChange];
+
+      await updateDoc(doc(db, 'tasks', taskId), {
+        status,
+        statusHistory: updatedHistory,
+        updatedAt: now,
+      });
+    } else {
+      // Status hasn't changed, just update updatedAt
+      await updateDoc(doc(db, 'tasks', taskId), {
+        updatedAt: Timestamp.now(),
+      });
+    }
   } catch (error) {
     console.error('Error updating task status:', error);
     throw error;
@@ -84,7 +162,7 @@ export async function updateTaskStatus(taskId: string, status: TaskStatus): Prom
 /**
  * Update task images
  */
-export async function updateTaskImages(taskId: string, images: string[]): Promise<void> {
+export async function updateTaskImages(taskId: string, images: (string | TaskImage)[]): Promise<void> {
   if (!db) {
     throw new Error('Firebase is not initialized. Please check your environment variables.');
   }
@@ -111,7 +189,10 @@ export async function updateTask(
     date: Date;
     assignedMembers: string[];
     assignedMemberNames: string[];
-    images: string[];
+    images: (string | TaskImage)[];
+    kpi?: string;
+    eta?: Date;
+    time?: string;
   }
 ): Promise<void> {
   if (!db) {
@@ -126,6 +207,9 @@ export async function updateTask(
       assignedMembers: taskData.assignedMembers,
       assignedMemberNames: taskData.assignedMemberNames,
       images: taskData.images,
+      kpi: taskData.kpi || '',
+      eta: taskData.eta ? Timestamp.fromDate(taskData.eta) : null,
+      time: taskData.time || '',
       updatedAt: Timestamp.now(),
     });
   } catch (error) {

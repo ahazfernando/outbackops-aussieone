@@ -1,5 +1,17 @@
 export type TaskStatus = 'New' | 'Progress' | 'Complete';
 
+export interface StatusChange {
+  status: TaskStatus;
+  timestamp: Date;
+  changedBy?: string; // User ID who changed the status
+  changedByName?: string; // User name for display
+}
+
+export interface TaskImage {
+  url: string;
+  description?: string;
+}
+
 export interface Task {
   id: string;
   taskId: string; // User-defined task ID
@@ -9,11 +21,15 @@ export interface Task {
   status: TaskStatus;
   assignedMembers: string[]; // Array of user IDs
   assignedMemberNames?: string[]; // Array of user names for display
-  images: string[]; // Array of Cloudinary image URLs
+  images: (string | TaskImage)[]; // Array of Cloudinary image URLs or objects with url and description
+  kpi?: string; // Key Performance Indicator
+  eta?: Date; // Estimated Time of Arrival / Estimated Completion Date
+  time?: string; // Task time (HH:MM format)
   createdAt: Date;
   updatedAt: Date;
   createdBy: string; // Admin user ID who created the task
   createdByName?: string; // Admin name for display
+  statusHistory?: StatusChange[]; // History of status changes
 }
 
 export interface FirestoreTask {
@@ -25,10 +41,19 @@ export interface FirestoreTask {
   status: TaskStatus;
   assignedMembers: string[];
   assignedMemberNames?: string[];
-  images: string[];
+  images: (string | { url: string; description?: string })[];
+  kpi?: string;
+  eta?: any; // Firestore Timestamp
+  time?: string;
   createdAt: any; // Firestore Timestamp
   updatedAt: any; // Firestore Timestamp
   createdBy: string;
   createdByName?: string;
+  statusHistory?: Array<{
+    status: TaskStatus;
+    timestamp: any; // Firestore Timestamp
+    changedBy?: string;
+    changedByName?: string;
+  }>;
 }
 

@@ -14,7 +14,7 @@ import { createTask } from '@/lib/tasks';
 import { uploadImageToCloudinary } from '@/lib/cloudinary';
 import { toast } from '@/hooks/use-toast';
 import { format } from 'date-fns';
-import { CalendarIcon, Plus, Loader2, X, Image as ImageIcon, ChevronDown } from 'lucide-react';
+import { CalendarIcon, Plus, Loader2, X, Image as ImageIcon, ChevronDown, Upload, Clock } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { cn } from '@/lib/utils';
 
@@ -42,13 +42,16 @@ export function CreateTaskDialog({ users, onTaskCreated }: CreateTaskDialogProps
     date: new Date(),
     assignedMembers: [] as string[],
     images: [] as string[],
+    kpi: '',
+    eta: undefined as Date | undefined,
+    time: '09:00',
   });
 
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
+  const [isDragging, setIsDragging] = useState(false);
 
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
+  const validateAndAddFiles = (files: File[]) => {
     if (files.length === 0) return;
 
     // Validate file types
@@ -75,6 +78,17 @@ export function CreateTaskDialog({ users, onTaskCreated }: CreateTaskDialogProps
       return;
     }
 
+    // Check total file limit (max 2 files)
+    const totalFiles = selectedFiles.length + files.length;
+    if (totalFiles > 2) {
+      toast({
+        title: 'Too many files',
+        description: 'Maximum 2 files allowed',
+        variant: 'destructive',
+      });
+      return;
+    }
+
     setSelectedFiles(prev => [...prev, ...files]);
     
     // Create previews
@@ -85,6 +99,32 @@ export function CreateTaskDialog({ users, onTaskCreated }: CreateTaskDialogProps
       };
       reader.readAsDataURL(file);
     });
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    validateAndAddFiles(files);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    const files = Array.from(e.dataTransfer.files);
+    validateAndAddFiles(files);
   };
 
   const removeImage = (index: number) => {
@@ -159,6 +199,9 @@ export function CreateTaskDialog({ users, onTaskCreated }: CreateTaskDialogProps
         assignedMembers: formData.assignedMembers,
         assignedMemberNames,
         images: uploadedImages,
+        kpi: formData.kpi.trim() || undefined,
+        eta: formData.eta,
+        time: formData.time || undefined,
         createdBy: user?.id || '',
         createdByName: user?.name || '',
       });
@@ -176,6 +219,9 @@ export function CreateTaskDialog({ users, onTaskCreated }: CreateTaskDialogProps
         date: new Date(),
         assignedMembers: [],
         images: [],
+        kpi: '',
+        eta: undefined,
+        time: '09:00',
       });
       setSelectedFiles([]);
       setImagePreviews([]);
@@ -269,6 +315,53 @@ export function CreateTaskDialog({ users, onTaskCreated }: CreateTaskDialogProps
             />
           </div>
 
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="kpi">KPI</Label>
+              <Input
+                id="kpi"
+                placeholder="e.g., 95% completion rate"
+                value={formData.kpi}
+                onChange={(e) => setFormData(prev => ({ ...prev, kpi: e.target.value }))}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="eta">ETA</Label>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    className={cn(
+                      "w-full justify-start text-left font-normal",
+                      !formData.eta && "text-muted-foreground"
+                    )}
+                  >
+                    <CalendarIcon className="mr-2 h-4 w-4" />
+                    {formData.eta ? format(formData.eta, "PPP") : "Pick ETA date"}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-auto p-0">
+                  <Calendar
+                    mode="single"
+                    selected={formData.eta}
+                    onSelect={(date) => setFormData(prev => ({ ...prev, eta: date }))}
+                    initialFocus
+                  />
+                </PopoverContent>
+              </Popover>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="time">Time</Label>
+            <Input
+              id="time"
+              type="time"
+              value={formData.time}
+              onChange={(e) => setFormData(prev => ({ ...prev, time: e.target.value }))}
+            />
+          </div>
+
           <div className="space-y-2">
             <Label>Assign Members *</Label>
             <Popover>
@@ -304,7 +397,7 @@ export function CreateTaskDialog({ users, onTaskCreated }: CreateTaskDialogProps
                             htmlFor={`member-${user.id}`}
                             className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer flex-1"
                           >
-                            {user.name} ({user.email})
+                            {user.name}
                           </label>
                         </div>
                       ))}
@@ -319,17 +412,51 @@ export function CreateTaskDialog({ users, onTaskCreated }: CreateTaskDialogProps
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="images">Images</Label>
-            <div className="flex items-center gap-2">
-              <Input
-                id="images"
+            <Label>Images</Label>
+            <div
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              className={cn(
+                "border-2 border-dashed rounded-lg p-8 text-center transition-colors cursor-pointer",
+                isDragging
+                  ? "border-primary bg-primary/10"
+                  : "border-muted-foreground/25 hover:border-muted-foreground/50"
+              )}
+              onClick={() => document.getElementById('images-input')?.click()}
+            >
+              <input
+                id="images-input"
                 type="file"
                 accept="image/*"
                 multiple
                 onChange={handleFileSelect}
                 disabled={uploadingImages}
+                className="hidden"
               />
-              <ImageIcon className="h-4 w-4 text-muted-foreground" />
+              <div className="flex flex-col items-center gap-3">
+                <div className="rounded-full border-2 border-muted-foreground/50 p-3">
+                  <Upload className="h-6 w-6 text-muted-foreground" />
+                </div>
+                <div className="space-y-1">
+                  <p className="text-sm font-medium">Drag & drop files here</p>
+                  <p className="text-xs text-muted-foreground">
+                    Or click to browse (max 2 files, up to 5MB each)
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    document.getElementById('images-input')?.click();
+                  }}
+                  disabled={uploadingImages}
+                >
+                  Browse files
+                </Button>
+              </div>
             </div>
             {imagePreviews.length > 0 && (
               <div className="grid grid-cols-4 gap-2 mt-2">

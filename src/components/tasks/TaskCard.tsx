@@ -15,7 +15,7 @@ import { updateTaskStatus, updateTaskImages } from '@/lib/tasks';
 import { uploadImageToCloudinary } from '@/lib/cloudinary';
 import { toast } from '@/hooks/use-toast';
 import { format } from 'date-fns';
-import { Image as ImageIcon, X, Loader2, Camera, GripVertical } from 'lucide-react';
+import { Image as ImageIcon, X, Loader2, Camera, GripVertical, Eye } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 
 interface TaskCardProps {
@@ -47,7 +47,10 @@ export function TaskCard({ task, onStatusChange, canEdit = false, onCardClick }:
 
     try {
       setIsUpdating(true);
-      await updateTaskStatus(task.id, newStatus);
+      await updateTaskStatus(task.id, newStatus, {
+        changedBy: user?.id,
+        changedByName: user?.name,
+      });
       toast({
         title: 'Status updated',
         description: `Task status changed to ${newStatus}`,
@@ -271,6 +274,18 @@ export function TaskCard({ task, onStatusChange, canEdit = false, onCardClick }:
               </span>
             </div>
           )}
+
+          <div className="pt-2 border-t" onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()}>
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full"
+              onClick={() => onCardClick?.(task)}
+            >
+              <Eye className="h-4 w-4 mr-2" />
+              View Task
+            </Button>
+          </div>
         </CardContent>
       </Card>
 

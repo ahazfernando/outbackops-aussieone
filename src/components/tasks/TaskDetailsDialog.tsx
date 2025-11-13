@@ -21,11 +21,21 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Checkbox } from '@/components/ui/checkbox';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
-import { updateTask, updateTaskStatus, updateTaskImages } from '@/lib/tasks';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import { updateTask, updateTaskStatus, updateTaskImages, deleteTask } from '@/lib/tasks';
 import { uploadImageToCloudinary } from '@/lib/cloudinary';
 import { toast } from '@/hooks/use-toast';
 import { format } from 'date-fns';
-import { CalendarIcon, Loader2, Camera, X, Edit, Save, User, Clock, Image as ImageIcon, ChevronDown } from 'lucide-react';
+import { CalendarIcon, Loader2, Camera, X, Edit, Save, User, Clock, Image as ImageIcon, ChevronDown, Trash2, Upload } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { cn } from '@/lib/utils';
 
@@ -56,6 +66,8 @@ export function TaskDetailsDialog({
   const [isSaving, setIsSaving] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadingIndex, setUploadingIndex] = useState<number | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
 
   const [formData, setFormData] = useState({
     taskId: '',
@@ -64,10 +76,15 @@ export function TaskDetailsDialog({
     date: new Date(),
     assignedMembers: [] as string[],
     status: 'New' as TaskStatus,
+    kpi: '',
+    eta: undefined as Date | undefined,
+    time: '09:00',
   });
 
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
+  const [imageDescriptions, setImageDescriptions] = useState<{ [key: number]: string }>({});
+  const [isDragging, setIsDragging] = useState(false);
 
   useEffect(() => {
     if (task) {
@@ -78,15 +95,25 @@ export function TaskDetailsDialog({
         date: task.date,
         assignedMembers: task.assignedMembers,
         status: task.status,
+        kpi: task.kpi || '',
+        eta: task.eta,
+        time: task.time || '09:00',
       });
       setImagePreviews([]);
       setSelectedFiles([]);
+      // Initialize image descriptions from existing images
+      const descriptions: { [key: number]: string } = {};
+      task.images.forEach((img, index) => {
+        if (typeof img === 'object' && img.description) {
+          descriptions[index] = img.description;
+        }
+      });
+      setImageDescriptions(descriptions);
       setIsEditing(false);
     }
   }, [task]);
 
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
+  const validateAndAddFiles = (files: File[]) => {
     if (files.length === 0) return;
 
     const validTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
@@ -111,6 +138,17 @@ export function TaskDetailsDialog({
       return;
     }
 
+    // Check total file limit (max 2 files)
+    const totalFiles = selectedFiles.length + files.length;
+    if (totalFiles > 2) {
+      toast({
+        title: 'Too many files',
+        description: 'Maximum 2 files allowed',
+        variant: 'destructive',
+      });
+      return;
+    }
+
     setSelectedFiles(prev => [...prev, ...files]);
 
     files.forEach(file => {
@@ -122,10 +160,40 @@ export function TaskDetailsDialog({
     });
   };
 
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    validateAndAddFiles(files);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    const files = Array.from(e.dataTransfer.files);
+    validateAndAddFiles(files);
+  };
+
   const removeImage = (index: number) => {
     if (!task) return;
     setImagePreviews(prev => prev.filter((_, i) => i !== index));
     setSelectedFiles(prev => prev.filter((_, i) => i !== index));
+    // Remove description for this image
+    const newDescriptions = { ...imageDescriptions };
+    delete newDescriptions[index];
+    setImageDescriptions(newDescriptions);
   };
 
   const removeExistingImage = async (index: number) => {
@@ -175,12 +243,16 @@ export function TaskDetailsDialog({
     try {
       setIsSaving(true);
 
-      // Upload new images
-      const uploadedImages: string[] = [];
-      for (const file of selectedFiles) {
+      // Upload new images with descriptions
+      const uploadedImages: Array<{ url: string; description?: string }> = [];
+      for (let i = 0; i < selectedFiles.length; i++) {
         try {
-          const result = await uploadImageToCloudinary(file);
-          uploadedImages.push(result.url);
+          const result = await uploadImageToCloudinary(selectedFiles[i]);
+          const description = imageDescriptions[task.images.length + i]?.trim();
+          uploadedImages.push({
+            url: result.url,
+            description: description || undefined,
+          });
         } catch (error: any) {
           console.error('Error uploading image:', error);
         }
@@ -192,6 +264,15 @@ export function TaskDetailsDialog({
         return user?.name || '';
       }).filter(Boolean);
 
+      // Prepare existing images with updated descriptions
+      const existingImages = task.images.map((img, index) => {
+        const url = typeof img === 'string' ? img : img.url;
+        const description = imageDescriptions[index]?.trim();
+        return description
+          ? { url, description }
+          : url;
+      });
+
       // Update task
       await updateTask(task.id, {
         taskId: formData.taskId.trim(),
@@ -200,7 +281,10 @@ export function TaskDetailsDialog({
         date: formData.date,
         assignedMembers: formData.assignedMembers,
         assignedMemberNames,
-        images: [...task.images, ...uploadedImages],
+        images: [...existingImages, ...uploadedImages],
+        kpi: formData.kpi.trim() || undefined,
+        eta: formData.eta,
+        time: formData.time || undefined,
       });
 
       toast({
@@ -211,6 +295,7 @@ export function TaskDetailsDialog({
       setIsEditing(false);
       setImagePreviews([]);
       setSelectedFiles([]);
+      setImageDescriptions({});
       onTaskUpdated?.();
     } catch (error: any) {
       toast({
@@ -227,7 +312,10 @@ export function TaskDetailsDialog({
     if (!task) return;
 
     try {
-      await updateTaskStatus(task.id, newStatus);
+      await updateTaskStatus(task.id, newStatus, {
+        changedBy: user?.id,
+        changedByName: user?.name,
+      });
       setFormData(prev => ({ ...prev, status: newStatus }));
       toast({
         title: 'Status updated',
@@ -265,43 +353,41 @@ export function TaskDetailsDialog({
       .slice(0, 2);
   };
 
+  const handleDelete = async () => {
+    if (!task) return;
+
+    try {
+      setIsDeleting(true);
+      await deleteTask(task.id);
+      toast({
+        title: 'Task deleted',
+        description: 'Task has been deleted successfully',
+      });
+      setDeleteDialogOpen(false);
+      onOpenChange(false);
+      onTaskUpdated?.();
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error.message || 'Failed to delete task',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   if (!task) return null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <div className="flex items-center justify-between">
-            <div>
-              <DialogTitle className="text-2xl">Task Details</DialogTitle>
-              <DialogDescription>
-                View and manage task information
-              </DialogDescription>
-            </div>
-            {isAdmin && (
-              <Button
-                variant={isEditing ? 'outline' : 'default'}
-                onClick={() => {
-                  if (isEditing) {
-                    setIsEditing(false);
-                  } else {
-                    setIsEditing(true);
-                  }
-                }}
-              >
-                {isEditing ? (
-                  <>
-                    <X className="h-4 w-4 mr-2" />
-                    Cancel
-                  </>
-                ) : (
-                  <>
-                    <Edit className="h-4 w-4 mr-2" />
-                    Edit
-                  </>
-                )}
-              </Button>
-            )}
+          <div>
+            <DialogTitle className="text-2xl">Task Details</DialogTitle>
+            <DialogDescription>
+              View and manage task information
+            </DialogDescription>
           </div>
         </DialogHeader>
 
@@ -323,21 +409,49 @@ export function TaskDetailsDialog({
                 {task.status}
               </Badge>
             </div>
-            {!isEditing && (
-              <Select
-                value={task.status}
-                onValueChange={(value) => handleStatusChange(value as TaskStatus)}
-              >
-                <SelectTrigger className="w-32">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="New">New</SelectItem>
-                  <SelectItem value="Progress">Progress</SelectItem>
-                  <SelectItem value="Complete">Complete</SelectItem>
-                </SelectContent>
-              </Select>
-            )}
+            <div className="flex items-center gap-2">
+              {!isEditing && (
+                <Select
+                  value={task.status}
+                  onValueChange={(value) => handleStatusChange(value as TaskStatus)}
+                >
+                  <SelectTrigger className="w-32 h-10">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="New">New</SelectItem>
+                    <SelectItem value="Progress">Progress</SelectItem>
+                    <SelectItem value="Complete">Complete</SelectItem>
+                  </SelectContent>
+                </Select>
+              )}
+              {isAdmin && (
+                <Button
+                  variant={isEditing ? 'outline' : 'default'}
+                  size="default"
+                  className="h-10"
+                  onClick={() => {
+                    if (isEditing) {
+                      setIsEditing(false);
+                    } else {
+                      setIsEditing(true);
+                    }
+                  }}
+                >
+                  {isEditing ? (
+                    <>
+                      <X className="h-4 w-4 mr-2" />
+                      Cancel
+                    </>
+                  ) : (
+                    <>
+                      <Edit className="h-4 w-4 mr-2" />
+                      Edit
+                    </>
+                  )}
+                </Button>
+              )}
+            </div>
           </div>
 
           {/* Task Name */}
@@ -369,9 +483,57 @@ export function TaskDetailsDialog({
             )}
           </div>
 
-          {/* Date */}
+          {/* Due Date and KPI */}
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label>Due Date</Label>
+              {isEditing ? (
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      className={cn(
+                        "w-full justify-start text-left font-normal",
+                        !formData.date && "text-muted-foreground"
+                      )}
+                    >
+                      <CalendarIcon className="mr-2 h-4 w-4" />
+                      {formData.date ? format(formData.date, "PPP") : "Pick a date"}
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-auto p-0">
+                    <Calendar
+                      mode="single"
+                      selected={formData.date}
+                      onSelect={(date) => date && setFormData(prev => ({ ...prev, date }))}
+                      initialFocus
+                    />
+                  </PopoverContent>
+                </Popover>
+              ) : (
+                <div className="flex items-center gap-2 text-muted-foreground">
+                  <CalendarIcon className="h-4 w-4" />
+                  <span>{format(task.date, 'PPP')}</span>
+                </div>
+              )}
+            </div>
+            <div className="space-y-2">
+              <Label>Key Performance Indicator</Label>
+              {isEditing ? (
+                <Input
+                  value={formData.kpi}
+                  onChange={(e) => setFormData(prev => ({ ...prev, kpi: e.target.value }))}
+                  placeholder="e.g., 95% completion rate"
+                />
+              ) : (
+                <p className="text-muted-foreground">{task.kpi || 'No KPI set'}</p>
+              )}
+            </div>
+          </div>
+
+          {/* ETA */}
           <div className="space-y-2">
-            <Label>Due Date</Label>
+            <Label>ETA</Label>
             {isEditing ? (
               <Popover>
                 <PopoverTrigger asChild>
@@ -379,18 +541,18 @@ export function TaskDetailsDialog({
                     variant="outline"
                     className={cn(
                       "w-full justify-start text-left font-normal",
-                      !formData.date && "text-muted-foreground"
+                      !formData.eta && "text-muted-foreground"
                     )}
                   >
                     <CalendarIcon className="mr-2 h-4 w-4" />
-                    {formData.date ? format(formData.date, "PPP") : "Pick a date"}
+                    {formData.eta ? format(formData.eta, "PPP") : "Pick ETA date"}
                   </Button>
                 </PopoverTrigger>
                 <PopoverContent className="w-auto p-0">
                   <Calendar
                     mode="single"
-                    selected={formData.date}
-                    onSelect={(date) => date && setFormData(prev => ({ ...prev, date }))}
+                    selected={formData.eta}
+                    onSelect={(date) => setFormData(prev => ({ ...prev, eta: date }))}
                     initialFocus
                   />
                 </PopoverContent>
@@ -398,7 +560,24 @@ export function TaskDetailsDialog({
             ) : (
               <div className="flex items-center gap-2 text-muted-foreground">
                 <CalendarIcon className="h-4 w-4" />
-                <span>{format(task.date, 'PPP')}</span>
+                <span>{task.eta ? format(task.eta, 'PPP') : 'No ETA set'}</span>
+              </div>
+            )}
+          </div>
+
+          {/* Time */}
+          <div className="space-y-2">
+            <Label>ETA Time</Label>
+            {isEditing ? (
+              <Input
+                type="time"
+                value={formData.time}
+                onChange={(e) => setFormData(prev => ({ ...prev, time: e.target.value }))}
+              />
+            ) : (
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <Clock className="h-4 w-4" />
+                <span>{task.time || 'No time set'}</span>
               </div>
             )}
           </div>
@@ -440,7 +619,7 @@ export function TaskDetailsDialog({
                               htmlFor={`member-${user.id}`}
                               className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer flex-1"
                             >
-                              {user.name} ({user.email})
+                              {user.name}
                             </label>
                           </div>
                         ))}
@@ -477,58 +656,135 @@ export function TaskDetailsDialog({
           <div className="space-y-2">
             <Label>Images</Label>
             {task.images.length > 0 && (
-              <div className="grid grid-cols-3 gap-2">
-                {task.images.map((image, index) => (
-                  <div key={index} className="relative group">
-                    <img
-                      src={image}
-                      alt={`Task image ${index + 1}`}
-                      className="w-full h-32 object-cover rounded"
-                    />
-                    {isAdmin && (
-                      <button
-                        onClick={() => removeExistingImage(index)}
-                        disabled={uploadingIndex === index}
-                        className="absolute top-2 right-2 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
-                      >
-                        {uploadingIndex === index ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : (
-                          <X className="h-4 w-4" />
+              <div className="space-y-4">
+                {task.images.map((image, index) => {
+                  const imageUrl = typeof image === 'string' ? image : image.url;
+                  const imageDescription = typeof image === 'object' ? image.description : undefined;
+                  return (
+                    <div key={index} className="space-y-2">
+                      <div className="relative group">
+                        <img
+                          src={imageUrl}
+                          alt={`Task image ${index + 1}`}
+                          className="w-full h-32 object-cover rounded"
+                        />
+                        {isAdmin && !isEditing && (
+                          <button
+                            onClick={() => removeExistingImage(index)}
+                            disabled={uploadingIndex === index}
+                            className="absolute top-2 right-2 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                          >
+                            {uploadingIndex === index ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <X className="h-4 w-4" />
+                            )}
+                          </button>
                         )}
-                      </button>
-                    )}
-                  </div>
-                ))}
+                      </div>
+                      {isEditing ? (
+                        <Input
+                          placeholder="Add description (optional)"
+                          value={imageDescriptions[index] || ''}
+                          onChange={(e) => {
+                            setImageDescriptions(prev => ({
+                              ...prev,
+                              [index]: e.target.value,
+                            }));
+                          }}
+                          className="text-sm"
+                        />
+                      ) : (
+                        imageDescription && (
+                          <p className="text-sm text-muted-foreground">{imageDescription}</p>
+                        )
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
             {isEditing && (
-              <div>
-                <Input
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  onChange={handleFileSelect}
-                  disabled={isUploading}
-                />
+              <div className="space-y-2">
+                <div
+                  onDragOver={handleDragOver}
+                  onDragLeave={handleDragLeave}
+                  onDrop={handleDrop}
+                  className={cn(
+                    "border-2 border-dashed rounded-lg p-8 text-center transition-colors cursor-pointer",
+                    isDragging
+                      ? "border-primary bg-primary/10"
+                      : "border-muted-foreground/25 hover:border-muted-foreground/50"
+                  )}
+                  onClick={() => document.getElementById('task-images-input')?.click()}
+                >
+                  <input
+                    id="task-images-input"
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    onChange={handleFileSelect}
+                    disabled={isUploading}
+                    className="hidden"
+                  />
+                  <div className="flex flex-col items-center gap-3">
+                    <div className="rounded-full border-2 border-muted-foreground/50 p-3">
+                      <Upload className="h-6 w-6 text-muted-foreground" />
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-sm font-medium">Drag & drop files here</p>
+                      <p className="text-xs text-muted-foreground">
+                        Or click to browse (max 2 files, up to 5MB each)
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        document.getElementById('task-images-input')?.click();
+                      }}
+                      disabled={isUploading}
+                    >
+                      Browse files
+                    </Button>
+                  </div>
+                </div>
                 {imagePreviews.length > 0 && (
-                  <div className="grid grid-cols-4 gap-2 mt-2">
-                    {imagePreviews.map((preview, index) => (
-                      <div key={index} className="relative group">
-                        <img
-                          src={preview}
-                          alt={`Preview ${index + 1}`}
-                          className="w-full h-20 object-cover rounded"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => removeImage(index)}
-                          className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
-                        >
-                          <X className="h-3 w-3" />
-                        </button>
-                      </div>
-                    ))}
+                  <div className="space-y-4 mt-2">
+                    {imagePreviews.map((preview, index) => {
+                      const imageIndex = task.images.length + index;
+                      return (
+                        <div key={index} className="space-y-2">
+                          <div className="relative group">
+                            <img
+                              src={preview}
+                              alt={`Preview ${index + 1}`}
+                              className="w-full h-32 object-cover rounded"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => removeImage(index)}
+                              className="absolute top-2 right-2 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                            >
+                              <X className="h-4 w-4" />
+                            </button>
+                          </div>
+                          <Input
+                            placeholder="Add description (optional)"
+                            value={imageDescriptions[imageIndex] || ''}
+                            onChange={(e) => {
+                              setImageDescriptions(prev => ({
+                                ...prev,
+                                [imageIndex]: e.target.value,
+                              }));
+                            }}
+                            className="text-sm"
+                          />
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -559,6 +815,122 @@ export function TaskDetailsDialog({
             </div>
           </div>
 
+          {/* Status Transition Times (Admin Only) */}
+          {isAdmin && task.statusHistory && task.statusHistory.length > 0 && (
+            <>
+              <Separator />
+              <div className="space-y-3">
+                <Label className="text-base font-semibold">Status Transition Times</Label>
+                <div className="space-y-3">
+                  {(() => {
+                    // Find the first (earliest) time each status was reached
+                    const progressChanges = task.statusHistory.filter(change => change.status === 'Progress');
+                    const completeChanges = task.statusHistory.filter(change => change.status === 'Complete');
+                    
+                    const progressChange = progressChanges.length > 0
+                      ? progressChanges.reduce((earliest, current) => 
+                          current.timestamp < earliest.timestamp ? current : earliest
+                        )
+                      : null;
+                    
+                    const completeChange = completeChanges.length > 0
+                      ? completeChanges.reduce((earliest, current) => 
+                          current.timestamp < earliest.timestamp ? current : earliest
+                        )
+                      : null;
+                    
+                    return (
+                      <>
+                        {progressChange && (
+                          <div className="flex items-center gap-3 p-3 rounded-lg border bg-card">
+                            <div className="w-2 h-2 rounded-full bg-yellow-500 flex-shrink-0" />
+                            <div className="flex-1">
+                              <div className="flex items-center gap-2">
+                                <Badge className="bg-yellow-500">Moved to Progress</Badge>
+                                <span className="text-sm text-muted-foreground">
+                                  {format(progressChange.timestamp, 'PPP p')}
+                                </span>
+                              </div>
+                              {progressChange.changedByName && (
+                                <div className="text-xs text-muted-foreground mt-1">
+                                  Changed by: {progressChange.changedByName}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                        {completeChange && (
+                          <div className="flex items-center gap-3 p-3 rounded-lg border bg-card">
+                            <div className="w-2 h-2 rounded-full bg-green-500 flex-shrink-0" />
+                            <div className="flex-1">
+                              <div className="flex items-center gap-2">
+                                <Badge className="bg-green-500">Moved to Complete</Badge>
+                                <span className="text-sm text-muted-foreground">
+                                  {format(completeChange.timestamp, 'PPP p')}
+                                </span>
+                              </div>
+                              {completeChange.changedByName && (
+                                <div className="text-xs text-muted-foreground mt-1">
+                                  Changed by: {completeChange.changedByName}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                        {!progressChange && !completeChange && (
+                          <div className="text-sm text-muted-foreground">
+                            No status transitions recorded yet.
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* Status History */}
+          {task.statusHistory && task.statusHistory.length > 0 && (
+            <>
+              <Separator />
+              <div className="space-y-3">
+                <Label className="text-base font-semibold">Status History</Label>
+                <div className="space-y-2">
+                  {task.statusHistory
+                    .slice()
+                    .reverse()
+                    .map((change, index) => (
+                      <div
+                        key={index}
+                        className="flex items-start gap-3 p-3 rounded-lg border bg-card"
+                      >
+                        <div className={cn(
+                          "w-2 h-2 rounded-full mt-2 flex-shrink-0",
+                          getStatusColor(change.status)
+                        )} />
+                        <div className="flex-1 space-y-1">
+                          <div className="flex items-center gap-2">
+                            <Badge className={getStatusColor(change.status)}>
+                              {change.status}
+                            </Badge>
+                            <span className="text-sm text-muted-foreground">
+                              {format(change.timestamp, 'PPP p')}
+                            </span>
+                          </div>
+                          {change.changedByName && (
+                            <div className="text-xs text-muted-foreground">
+                              Changed by: {change.changedByName}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              </div>
+            </>
+          )}
+
           {/* Save Button */}
           {isEditing && (
             <div className="flex justify-end gap-2 pt-4 border-t">
@@ -574,10 +946,25 @@ export function TaskDetailsDialog({
                       date: task.date,
                       assignedMembers: task.assignedMembers,
                       status: task.status,
+                      kpi: task.kpi || '',
+                      eta: task.eta,
+                      time: task.time || '09:00',
                     });
                   }
                   setImagePreviews([]);
                   setSelectedFiles([]);
+                  // Reset image descriptions to current task values
+                  if (task) {
+                    const descriptions: { [key: number]: string } = {};
+                    task.images.forEach((img, index) => {
+                      if (typeof img === 'object' && img.description) {
+                        descriptions[index] = img.description;
+                      }
+                    });
+                    setImageDescriptions(descriptions);
+                  } else {
+                    setImageDescriptions({});
+                  }
                 }}
               >
                 Cancel
@@ -597,8 +984,51 @@ export function TaskDetailsDialog({
               </Button>
             </div>
           )}
+
+          {/* Delete Button */}
+          {isAdmin && !isEditing && (
+            <div className="flex justify-end pt-4 border-t">
+              <Button
+                variant="destructive"
+                onClick={() => setDeleteDialogOpen(true)}
+              >
+                <Trash2 className="h-4 w-4 mr-2" />
+                Delete Task
+              </Button>
+            </div>
+          )}
         </div>
       </DialogContent>
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Are you sure?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This action cannot be undone. This will permanently delete the task
+              "{task?.name}" and all of its data.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDelete}
+              disabled={isDeleting}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {isDeleting ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Deleting...
+                </>
+              ) : (
+                'Delete'
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Dialog>
   );
 }
