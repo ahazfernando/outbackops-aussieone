@@ -31,18 +31,26 @@ import {
 import {
   getAuth,
   onAuthStateChanged,
-  User,
+  User as FirebaseUser,
 } from 'firebase/auth'
 import {
   getFirestore,
   doc,
   getDoc,
   setDoc,
+  collection,
+  query,
+  where,
+  getDocs,
+  Timestamp,
 } from 'firebase/firestore'
 import { format } from 'date-fns'
-import { Upload, CalendarIcon } from 'lucide-react'
+import { Upload, CalendarIcon, Pencil, Download, ArrowRight, Clock, Crown, CheckSquare, Star, FileText, User, Phone, Shield } from 'lucide-react'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
+import { useAuth } from '@/contexts/AuthContext'
+import { getCompletedTasksByUser } from '@/lib/tasks'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 
 const FormSchema = z.object({
   fullName: z.string().min(1, "Full name is required"),
@@ -153,8 +161,16 @@ const Profile: React.FC = () => {
     visaNotice: { file: null, preview: '' },
   })
   const [loading, setLoading] = useState(true)
-  const [currentUser, setCurrentUser] = useState<User | null>(null)
+  const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(null)
   const [dobDate, setDobDate] = useState<Date | undefined>(undefined)
+  const [attendanceMetrics, setAttendanceMetrics] = useState({
+    totalAttendance: 0,
+    completedTasks: 0,
+    employeeRating: null as number | null,
+    latestClockInTime: null as string | null,
+  })
+  const [loadingMetrics, setLoadingMetrics] = useState(true)
+  const { user: authUser } = useAuth()
 
   const fileInputRefs = useRef<Record<UploadKey, HTMLInputElement | null>>({
     profilePhoto: null,
@@ -229,7 +245,7 @@ const Profile: React.FC = () => {
             
             scalarKeys.forEach((key) => {
               if (data[key] !== undefined && data[key] !== null) {
-                formData[key] = data[key] as any
+                (formData as any)[key] = data[key]
               }
             })
             
@@ -290,6 +306,9 @@ const Profile: React.FC = () => {
               form.setValue('email', user.email)
             }
           }
+          
+          // Load attendance metrics
+          await loadAttendanceMetrics(user.uid)
         } catch (error) {
           console.error('Error loading profile:', error)
           toast({ variant: 'destructive', title: 'Error loading profile', description: 'Failed to load your profile data. Please try refreshing the page.' })
@@ -302,6 +321,93 @@ const Profile: React.FC = () => {
     })
     return unsubscribe
   }, [auth, db, form, toast])
+
+  const loadAttendanceMetrics = async (userId: string) => {
+    if (!db) return
+    
+    try {
+      setLoadingMetrics(true)
+      
+      // Load time entries for attendance and latest clock in
+      const timeEntriesQuery = query(
+        collection(db, 'timeEntries'),
+        where('userId', '==', userId)
+      )
+      
+      const timeEntriesSnapshot = await getDocs(timeEntriesQuery)
+      const entries = timeEntriesSnapshot.docs.map((doc) => {
+        const data = doc.data()
+        return {
+          clockIn: data.clockIn?.toDate() || null,
+          clockOut: data.clockOut?.toDate() || null,
+          date: data.date?.toDate() || null,
+        }
+      }).filter(entry => entry.clockIn !== null)
+      
+      // Calculate total attendance (unique days with clock in)
+      const uniqueDates = new Set(
+        entries
+          .filter(e => e.date)
+          .map(e => format(e.date!, 'yyyy-MM-dd'))
+      )
+      const totalAttendance = uniqueDates.size
+      
+      // Get latest clock in time
+      const clockInTimes = entries
+        .filter(e => e.clockIn)
+        .map(e => e.clockIn!)
+        .sort((a, b) => b.getTime() - a.getTime()) // Sort descending (most recent first)
+      
+      const latestClockInTime = clockInTimes.length > 0
+        ? format(clockInTimes[0], 'HH:mm')
+        : null
+      
+      // Load completed tasks
+      let completedTasks = 0
+      try {
+        const completedTasksList = await getCompletedTasksByUser(userId)
+        completedTasks = completedTasksList.length
+      } catch (error) {
+        console.error('Error loading completed tasks:', error)
+      }
+      
+      // Load employee rating
+      let employeeRating: number | null = null
+      try {
+        const ratingsQuery = query(
+          collection(db, 'ratings'),
+          where('employeeId', '==', userId)
+        )
+        const ratingsSnapshot = await getDocs(ratingsQuery)
+        
+        if (!ratingsSnapshot.empty) {
+          // Calculate average rating from all ratings
+          const ratings = ratingsSnapshot.docs.map(doc => {
+            const data = doc.data()
+            return data.rating || 0
+          }).filter(r => r > 0)
+          
+          if (ratings.length > 0) {
+            const sum = ratings.reduce((a, b) => a + b, 0)
+            employeeRating = Math.round((sum / ratings.length) * 10) / 10 // Round to 1 decimal
+          }
+        }
+      } catch (error) {
+        console.error('Error loading employee rating:', error)
+      }
+      
+      setAttendanceMetrics({
+        totalAttendance,
+        completedTasks,
+        employeeRating,
+        latestClockInTime,
+      })
+    } catch (error) {
+      console.error('Error loading attendance metrics:', error)
+    } finally {
+      setLoadingMetrics(false)
+    }
+  }
 
   const getUploadState = (key: UploadKey): UploadField => uploads[key]
 
@@ -516,16 +622,61 @@ const Profile: React.FC = () => {
     )
   }
 
+  const profilePhotoPreview = getUploadState('profilePhoto').preview
+
   return (
     <div className="space-y-6">
-      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-8">
-        {/* Profile Photo */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Profile Photo</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
+      {/* Employee Detail Header */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div className="h-1 w-1 bg-green-500 rounded-full"></div>
+              <CardTitle className="text-2xl">Profile Details</CardTitle>
+            </div>
+            <div className="flex items-center gap-4">
+              <Select defaultValue="this-year">
+                <SelectTrigger className="w-[140px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="this-year">This Year</SelectItem>
+                  <SelectItem value="last-year">Last Year</SelectItem>
+                  <SelectItem value="all-time">All Time</SelectItem>
+                </SelectContent>
+              </Select>
+              <Button variant="default" className="bg-green-600 hover:bg-green-700">
+                <Download className="h-4 w-4 mr-2" />
+                Download Info
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-start gap-6">
+            {/* Profile Picture with Edit Icon */}
+            <div className="relative group">
+              <div className="relative">
+                {profilePhotoPreview ? (
+                  <img
+                    src={profilePhotoPreview}
+                    alt="Profile"
+                    className="w-32 h-32 rounded-full object-cover border-4 border-border"
+                  />
+                ) : (
+                  <div className="w-32 h-32 rounded-full bg-muted border-4 border-border flex items-center justify-center">
+                    <Upload className="h-12 w-12 text-muted-foreground" />
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => triggerUpload('profilePhoto')}
+                  className="absolute bottom-0 right-0 bg-primary text-primary-foreground rounded-full p-2 shadow-lg hover:bg-primary/90 transition-colors"
+                  title="Edit profile picture"
+                >
+                  <Pencil className="h-4 w-4" />
+                </button>
+              </div>
               <input
                 id="profile-photo"
                 ref={(el) => { fileInputRefs.current['profilePhoto'] = el }}
@@ -540,342 +691,460 @@ const Profile: React.FC = () => {
                   }
                 }}
               />
-              {renderPreview('profilePhoto')}
             </div>
-          </CardContent>
-        </Card>
 
-        {/* Personal Information */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Personal Information</CardTitle>
-          </CardHeader>
-          <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4 space-y-4 md:space-y-0">
-            <div className="space-y-2">
-              <Label htmlFor="fullName">Full Name</Label>
-              <Input id="fullName" {...form.register('fullName')} />
-              {form.formState.errors.fullName && <p className="text-sm text-destructive">{form.formState.errors.fullName.message}</p>}
+            {/* Employee Info */}
+            <div className="flex-1 space-y-4">
+              <div>
+                <h2 className="text-3xl font-bold">
+                  {form.watch('fullName') || form.watch('preferredName') || authUser?.name || 'Employee Name'}
+                </h2>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div>
+                  <p className="text-sm text-muted-foreground mb-1">Role</p>
+                  <p className="font-medium">{form.watch('jobRole') || 'Not specified'}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-muted-foreground mb-1">Phone Number</p>
+                  <p className="font-medium">{form.watch('phone') || 'Not specified'}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-muted-foreground mb-1">Email Address</p>
+                  <p className="font-medium">{form.watch('email') || 'Not specified'}</p>
+                </div>
+              </div>
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="preferredName">Preferred Name</Label>
-              <Input id="preferredName" {...form.register('preferredName')} />
-              {form.formState.errors.preferredName && <p className="text-sm text-destructive">{form.formState.errors.preferredName.message}</p>}
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="email">Email Address</Label>
-              <Input 
-                id="email" 
-                type="email" 
-                {...form.register('email')} 
-                disabled 
-                className="bg-muted cursor-not-allowed opacity-60"
-              />
-              {form.formState.errors.email && <p className="text-sm text-destructive">{form.formState.errors.email.message}</p>}
-              <p className="text-xs text-muted-foreground">Email address cannot be changed</p>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="phone">Phone Number</Label>
-              <Input id="phone" {...form.register('phone')} />
-              {form.formState.errors.phone && <p className="text-sm text-destructive">{form.formState.errors.phone.message}</p>}
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="dob">Date of Birth</Label>
-              <Popover>
-                <PopoverTrigger asChild>
-                  <Button
-                    variant="outline"
-                    className={cn(
-                      "w-full justify-start text-left font-normal",
-                      !dobDate && "text-muted-foreground"
-                    )}
-                  >
-                    <CalendarIcon className="mr-2 h-4 w-4" />
-                    {dobDate ? format(dobDate, "PPP") : <span>Pick a date</span>}
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent className="w-auto p-0" align="start">
-                  <Calendar
-                    mode="single"
-                    selected={dobDate}
-                    onSelect={(date) => {
-                      if (date) {
-                        setDobDate(date)
-                        form.setValue('dob', format(date, 'yyyy-MM-dd'))
-                      }
-                    }}
-                    initialFocus
-                    disabled={(date) =>
-                      date > new Date() || date < new Date('1900-01-01')
-                    }
+          </div>
+
+          {/* Metrics Cards */}
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mt-8">
+            <Card className="bg-muted/50">
+              <CardContent className="p-6">
+                <div className="flex items-center gap-4">
+                  <div className="p-3 rounded-full bg-primary/10">
+                    <ArrowRight className="h-6 w-6 text-primary" />
+                  </div>
+                  <div>
+                    <p className="text-3xl font-bold">{attendanceMetrics.totalAttendance}</p>
+                    <p className="text-sm text-muted-foreground">Total Attendance</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="bg-muted/50">
+              <CardContent className="p-6">
+                <div className="flex items-center gap-4">
+                  <div className="p-3 rounded-full bg-primary/10">
+                    <CheckSquare className="h-6 w-6 text-primary" />
+                  </div>
+                  <div>
+                    <p className="text-3xl font-bold">{attendanceMetrics.completedTasks}</p>
+                    <p className="text-sm text-muted-foreground">Completed Tasks</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="bg-muted/50">
+              <CardContent className="p-6">
+                <div className="flex items-center gap-4">
+                  <div className="p-3 rounded-full bg-primary/10">
+                    <Star className="h-6 w-6 text-primary" />
+                  </div>
+                  <div>
+                    <p className="text-3xl font-bold">
+                      {attendanceMetrics.employeeRating !== null 
+                        ? `${attendanceMetrics.employeeRating}/5` 
+                        : 'N/A'}
+                    </p>
+                    <p className="text-sm text-muted-foreground">Employee Rating</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="bg-muted/50">
+              <CardContent className="p-6">
+                <div className="flex items-center gap-4">
+                  <div className="p-3 rounded-full bg-primary/10">
+                    <Clock className="h-6 w-6 text-primary" />
+                  </div>
+                  <div>
+                    <p className="text-3xl font-bold">
+                      {attendanceMetrics.latestClockInTime || 'N/A'}
+                    </p>
+                    <p className="text-sm text-muted-foreground">Latest Clock In Time</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </CardContent>
+      </Card>
+
+      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-8">
+        <Tabs defaultValue="personal-info" className="w-full">
+          <TabsList className="grid w-full grid-cols-4">
+            <TabsTrigger value="personal-info" className="flex items-center gap-2">
+              <User className="h-4 w-4" />
+              Personal Information
+            </TabsTrigger>
+            <TabsTrigger value="documents" className="flex items-center gap-2">
+              <FileText className="h-4 w-4" />
+              Document Upload
+            </TabsTrigger>
+            <TabsTrigger value="emergency" className="flex items-center gap-2">
+              <Phone className="h-4 w-4" />
+              Emergency Contact
+            </TabsTrigger>
+            <TabsTrigger value="declaration" className="flex items-center gap-2">
+              <Shield className="h-4 w-4" />
+              Declaration
+            </TabsTrigger>
+          </TabsList>
+
+          {/* Personal Information Tab */}
+          <TabsContent value="personal-info" className="space-y-4">
+            <Card>
+              <CardHeader>
+                <CardTitle>Personal Information</CardTitle>
+              </CardHeader>
+              <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4 space-y-4 md:space-y-0">
+                <div className="space-y-2">
+                  <Label htmlFor="fullName">Full Name</Label>
+                  <Input id="fullName" {...form.register('fullName')} />
+                  {form.formState.errors.fullName && <p className="text-sm text-destructive">{form.formState.errors.fullName.message}</p>}
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="preferredName">Preferred Name</Label>
+                  <Input id="preferredName" {...form.register('preferredName')} />
+                  {form.formState.errors.preferredName && <p className="text-sm text-destructive">{form.formState.errors.preferredName.message}</p>}
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="email">Email Address</Label>
+                  <Input 
+                    id="email" 
+                    type="email" 
+                    {...form.register('email')} 
+                    disabled 
+                    className="bg-muted cursor-not-allowed opacity-60"
                   />
-                </PopoverContent>
-              </Popover>
-              {form.formState.errors.dob && <p className="text-sm text-destructive">{form.formState.errors.dob.message}</p>}
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="jobRole">Job Role/Title</Label>
-              <Input id="jobRole" {...form.register('jobRole')} />
-              {form.formState.errors.jobRole && <p className="text-sm text-destructive">{form.formState.errors.jobRole.message}</p>}
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="workLocation">Work Location</Label>
-              <Select onValueChange={(v) => form.setValue('workLocation', v as "Sri Lanka" | "Australia")} value={form.watch('workLocation')}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select work location" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="Sri Lanka">Sri Lanka</SelectItem>
-                  <SelectItem value="Australia">Australia</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="gender">Gender</Label>
-              <Select onValueChange={(v) => form.setValue('gender', v as "Male" | "Female" | "Prefer not to say")} value={form.watch('gender')}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select gender" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="Male">Male</SelectItem>
-                  <SelectItem value="Female">Female</SelectItem>
-                  <SelectItem value="Prefer not to say">Prefer not to say</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="residentialAddress">Residential Address</Label>
-              <Input id="residentialAddress" {...form.register('residentialAddress')} />
-              {form.formState.errors.residentialAddress && <p className="text-sm text-destructive">{form.formState.errors.residentialAddress.message}</p>}
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="postalCode">Postal Code</Label>
-              <Input id="postalCode" {...form.register('postalCode')} />
-              {form.formState.errors.postalCode && <p className="text-sm text-destructive">{form.formState.errors.postalCode.message}</p>}
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="employeeType">Employee Type</Label>
-              <Select onValueChange={(v) => form.setValue('employeeType', v as "Subcontractor" | "Full-time" | "Part-time" | "Intern (Trainee)")} value={form.watch('employeeType')}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select employee type" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="Subcontractor">Subcontractor</SelectItem>
-                  <SelectItem value="Full-time">Full-time</SelectItem>
-                  <SelectItem value="Part-time">Part-time</SelectItem>
-                  <SelectItem value="Intern (Trainee)">Intern (Trainee)</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="tfnAbn">TFN (Tax File Number) or ABN (Australian Business Number)</Label>
-              <Input id="tfnAbn" {...form.register('tfnAbn')} />
-            </div>
-          </CardContent>
-        </Card>
+                  {form.formState.errors.email && <p className="text-sm text-destructive">{form.formState.errors.email.message}</p>}
+                  <p className="text-xs text-muted-foreground">Email address cannot be changed</p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="phone">Phone Number</Label>
+                  <Input id="phone" {...form.register('phone')} />
+                  {form.formState.errors.phone && <p className="text-sm text-destructive">{form.formState.errors.phone.message}</p>}
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="dob">Date of Birth</Label>
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <Button
+                        variant="outline"
+                        className={cn(
+                          "w-full justify-start text-left font-normal",
+                          !dobDate && "text-muted-foreground"
+                        )}
+                      >
+                        <CalendarIcon className="mr-2 h-4 w-4" />
+                        {dobDate ? format(dobDate, "PPP") : <span>Pick a date</span>}
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-auto p-0" align="start">
+                      <Calendar
+                        mode="single"
+                        selected={dobDate}
+                        onSelect={(date) => {
+                          if (date) {
+                            setDobDate(date)
+                            form.setValue('dob', format(date, 'yyyy-MM-dd'))
+                          }
+                        }}
+                        initialFocus
+                        disabled={(date) =>
+                          date > new Date() || date < new Date('1900-01-01')
+                        }
+                      />
+                    </PopoverContent>
+                  </Popover>
+                  {form.formState.errors.dob && <p className="text-sm text-destructive">{form.formState.errors.dob.message}</p>}
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="jobRole">Job Role/Title</Label>
+                  <Input id="jobRole" {...form.register('jobRole')} />
+                  {form.formState.errors.jobRole && <p className="text-sm text-destructive">{form.formState.errors.jobRole.message}</p>}
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="workLocation">Work Location</Label>
+                  <Select onValueChange={(v) => form.setValue('workLocation', v as "Sri Lanka" | "Australia")} value={form.watch('workLocation')}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select work location" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="Sri Lanka">Sri Lanka</SelectItem>
+                      <SelectItem value="Australia">Australia</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="gender">Gender</Label>
+                  <Select onValueChange={(v) => form.setValue('gender', v as "Male" | "Female" | "Prefer not to say")} value={form.watch('gender')}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select gender" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="Male">Male</SelectItem>
+                      <SelectItem value="Female">Female</SelectItem>
+                      <SelectItem value="Prefer not to say">Prefer not to say</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="residentialAddress">Residential Address</Label>
+                  <Input id="residentialAddress" {...form.register('residentialAddress')} />
+                  {form.formState.errors.residentialAddress && <p className="text-sm text-destructive">{form.formState.errors.residentialAddress.message}</p>}
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="postalCode">Postal Code</Label>
+                  <Input id="postalCode" {...form.register('postalCode')} />
+                  {form.formState.errors.postalCode && <p className="text-sm text-destructive">{form.formState.errors.postalCode.message}</p>}
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="employeeType">Employee Type</Label>
+                  <Select onValueChange={(v) => form.setValue('employeeType', v as "Subcontractor" | "Full-time" | "Part-time" | "Intern (Trainee)")} value={form.watch('employeeType')}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select employee type" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="Subcontractor">Subcontractor</SelectItem>
+                      <SelectItem value="Full-time">Full-time</SelectItem>
+                      <SelectItem value="Part-time">Part-time</SelectItem>
+                      <SelectItem value="Intern (Trainee)">Intern (Trainee)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="tfnAbn">TFN (Tax File Number) or ABN (Australian Business Number)</Label>
+                  <Input id="tfnAbn" {...form.register('tfnAbn')} />
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
 
-        {/* Document Uploads */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Document Uploads</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-6">
-            <div className="space-y-2">
-              <Label htmlFor="idNumber">Sri Lankan NIC number / Driver License number or Australian Driver License Number</Label>
-              <Input id="idNumber" {...form.register('idNumber')} />
-              {form.formState.errors.idNumber && <p className="text-sm text-destructive">{form.formState.errors.idNumber.message}</p>}
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="space-y-2">
-                <Label htmlFor="id-front">Front photo of your Sri Lankan NIC / Driver license or Australian driver license</Label>
-                <input
-                  id="id-front"
-                  ref={(el) => { fileInputRefs.current['idFrontPhoto'] = el }}
-                  type="file"
-                  accept="image/*"
-                  style={{ display: 'none' } as React.CSSProperties}
-                  onChange={(e) => {
-                    const file = e.target.files?.[0]
-                    if (file) {
-                      setUploadFile('idFrontPhoto', file)
-                      e.target.value = ''
-                    }
-                  }}
-                />
-                {renderPreview('idFrontPhoto')}
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="id-back">Back photo of your Sri Lankan NIC / driver license or Australian driver license</Label>
-                <input
-                  id="id-back"
-                  ref={(el) => { fileInputRefs.current['idBackPhoto'] = el }}
-                  type="file"
-                  accept="image/*"
-                  style={{ display: 'none' } as React.CSSProperties}
-                  onChange={(e) => {
-                    const file = e.target.files?.[0]
-                    if (file) {
-                      setUploadFile('idBackPhoto', file)
-                      e.target.value = ''
-                    }
-                  }}
-                />
-                {renderPreview('idBackPhoto')}
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="selfie">Clear photo of yourself with a white background to use as the company ID</Label>
-                <input
-                  id="selfie"
-                  ref={(el) => { fileInputRefs.current['selfiePhoto'] = el }}
-                  type="file"
-                  accept="image/*"
-                  style={{ display: 'none' } as React.CSSProperties}
-                  onChange={(e) => {
-                    const file = e.target.files?.[0]
-                    if (file) {
-                      setUploadFile('selfiePhoto', file)
-                      e.target.value = ''
-                    }
-                  }}
-                />
-                {renderPreview('selfiePhoto')}
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="passport">A photo of your passport detail page</Label>
-                <input
-                  id="passport"
-                  ref={(el) => { fileInputRefs.current['passportPhoto'] = el }}
-                  type="file"
-                  accept="image/*"
-                  style={{ display: 'none' } as React.CSSProperties}
-                  onChange={(e) => {
-                    const file = e.target.files?.[0]
-                    if (file) {
-                      setUploadFile('passportPhoto', file)
-                      e.target.value = ''
-                    }
-                  }}
-                />
-                {renderPreview('passportPhoto')}
-              </div>
-              <div className="space-y-2 md:col-span-2">
-                <Label htmlFor="contract">Contract Document (As PDF)</Label>
-                <input
-                  id="contract"
-                  ref={(el) => { fileInputRefs.current['contractDoc'] = el }}
-                  type="file"
-                  accept=".pdf"
-                  style={{ display: 'none' } as React.CSSProperties}
-                  onChange={(e) => {
-                    const file = e.target.files?.[0]
-                    if (file) {
-                      setUploadFile('contractDoc', file)
-                      e.target.value = ''
-                    }
-                  }}
-                />
-                {renderPreview('contractDoc')}
-              </div>
-            </div>
-            <div className="space-y-2">
-              <Label className="flex items-center space-x-2">
-                <Checkbox
-                  id="residingInAu"
-                  checked={residingInAu}
-                  onCheckedChange={(checked) => form.setValue('residingInAu', !!checked)}
-                />
-                <span className='font-bold'>Currently residing in Australia</span>
-              </Label>
-            </div>
-            {residingInAu && (
-              <div className="ml-4 sm:ml-6 space-y-4 p-4 border-l-2 border-accent">
+          {/* Document Upload Tab */}
+          <TabsContent value="documents" className="space-y-4">
+            <Card>
+              <CardHeader>
+                <CardTitle>Document Uploads</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-6">
                 <div className="space-y-2">
-                  <Label htmlFor="visaType">Visa Type</Label>
-                  <Input id="visaType" {...form.register('visaType')} />
-                  {form.formState.errors.visaType && <p className="text-sm text-destructive">{form.formState.errors.visaType.message}</p>}
+                  <Label htmlFor="idNumber">Sri Lankan NIC number / Driver License number or Australian Driver License Number</Label>
+                  <Input id="idNumber" {...form.register('idNumber')} />
+                  {form.formState.errors.idNumber && <p className="text-sm text-destructive">{form.formState.errors.idNumber.message}</p>}
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="space-y-2">
+                    <Label htmlFor="id-front">Front photo of your Sri Lankan NIC / Driver license or Australian driver license</Label>
+                    <input
+                      id="id-front"
+                      ref={(el) => { fileInputRefs.current['idFrontPhoto'] = el }}
+                      type="file"
+                      accept="image/*"
+                      style={{ display: 'none' } as React.CSSProperties}
+                      onChange={(e) => {
+                        const file = e.target.files?.[0]
+                        if (file) {
+                          setUploadFile('idFrontPhoto', file)
+                          e.target.value = ''
+                        }
+                      }}
+                    />
+                    {renderPreview('idFrontPhoto')}
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="id-back">Back photo of your Sri Lankan NIC / driver license or Australian driver license</Label>
+                    <input
+                      id="id-back"
+                      ref={(el) => { fileInputRefs.current['idBackPhoto'] = el }}
+                      type="file"
+                      accept="image/*"
+                      style={{ display: 'none' } as React.CSSProperties}
+                      onChange={(e) => {
+                        const file = e.target.files?.[0]
+                        if (file) {
+                          setUploadFile('idBackPhoto', file)
+                          e.target.value = ''
+                        }
+                      }}
+                    />
+                    {renderPreview('idBackPhoto')}
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="selfie">Clear photo of yourself with a white background to use as the company ID</Label>
+                    <input
+                      id="selfie"
+                      ref={(el) => { fileInputRefs.current['selfiePhoto'] = el }}
+                      type="file"
+                      accept="image/*"
+                      style={{ display: 'none' } as React.CSSProperties}
+                      onChange={(e) => {
+                        const file = e.target.files?.[0]
+                        if (file) {
+                          setUploadFile('selfiePhoto', file)
+                          e.target.value = ''
+                        }
+                      }}
+                    />
+                    {renderPreview('selfiePhoto')}
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="passport">A photo of your passport detail page</Label>
+                    <input
+                      id="passport"
+                      ref={(el) => { fileInputRefs.current['passportPhoto'] = el }}
+                      type="file"
+                      accept="image/*"
+                      style={{ display: 'none' } as React.CSSProperties}
+                      onChange={(e) => {
+                        const file = e.target.files?.[0]
+                        if (file) {
+                          setUploadFile('passportPhoto', file)
+                          e.target.value = ''
+                        }
+                      }}
+                    />
+                    {renderPreview('passportPhoto')}
+                  </div>
+                  <div className="space-y-2 md:col-span-2">
+                    <Label htmlFor="contract">Contract Document (As PDF)</Label>
+                    <input
+                      id="contract"
+                      ref={(el) => { fileInputRefs.current['contractDoc'] = el }}
+                      type="file"
+                      accept=".pdf"
+                      style={{ display: 'none' } as React.CSSProperties}
+                      onChange={(e) => {
+                        const file = e.target.files?.[0]
+                        if (file) {
+                          setUploadFile('contractDoc', file)
+                          e.target.value = ''
+                        }
+                      }}
+                    />
+                    {renderPreview('contractDoc')}
+                  </div>
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="visaSubclass">Visa Subclass</Label>
-                  <Input id="visaSubclass" {...form.register('visaSubclass')} />
-                  {form.formState.errors.visaSubclass && <p className="text-sm text-destructive">{form.formState.errors.visaSubclass.message}</p>}
+                  <Label className="flex items-center space-x-2">
+                    <Checkbox
+                      id="residingInAu"
+                      checked={residingInAu}
+                      onCheckedChange={(checked) => form.setValue('residingInAu', !!checked)}
+                    />
+                    <span className='font-bold'>Currently residing in Australia</span>
+                  </Label>
+                </div>
+                {residingInAu && (
+                  <div className="ml-4 sm:ml-6 space-y-4 p-4 border-l-2 border-accent">
+                    <div className="space-y-2">
+                      <Label htmlFor="visaType">Visa Type</Label>
+                      <Input id="visaType" {...form.register('visaType')} />
+                      {form.formState.errors.visaType && <p className="text-sm text-destructive">{form.formState.errors.visaType.message}</p>}
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="visaSubclass">Visa Subclass</Label>
+                      <Input id="visaSubclass" {...form.register('visaSubclass')} />
+                      {form.formState.errors.visaSubclass && <p className="text-sm text-destructive">{form.formState.errors.visaSubclass.message}</p>}
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="visa-notice">A copy of your visa grant notice (Image)</Label>
+                      <input
+                        id="visa-notice"
+                        ref={(el) => { fileInputRefs.current['visaNotice'] = el }}
+                        type="file"
+                        accept="image/*"
+                        style={{ display: 'none' } as React.CSSProperties}
+                        onChange={(e) => {
+                          const file = e.target.files?.[0]
+                          if (file) {
+                            setUploadFile('visaNotice', file)
+                            e.target.value = ''
+                          }
+                        }}
+                      />
+                      {renderPreview('visaNotice')}
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Emergency Contact Tab */}
+          <TabsContent value="emergency" className="space-y-4">
+            <Card>
+              <CardHeader>
+                <CardTitle>Emergency Contact Details</CardTitle>
+              </CardHeader>
+              <CardContent className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="emergency-fullName">Full Name</Label>
+                  <Input id="emergency-fullName" {...form.register('emergency.fullName')} />
+                  {form.formState.errors.emergency?.fullName && <p className="text-sm text-destructive">{form.formState.errors.emergency.fullName.message}</p>}
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="visa-notice">A copy of your visa grant notice (Image)</Label>
-                  <input
-                    id="visa-notice"
-                    ref={(el) => { fileInputRefs.current['visaNotice'] = el }}
-                    type="file"
-                    accept="image/*"
-                    style={{ display: 'none' } as React.CSSProperties}
-                    onChange={(e) => {
-                      const file = e.target.files?.[0]
-                      if (file) {
-                        setUploadFile('visaNotice', file)
-                        e.target.value = ''
-                      }
-                    }}
+                  <Label htmlFor="emergency-relationship">Relationship</Label>
+                  <Input id="emergency-relationship" {...form.register('emergency.relationship')} />
+                  {form.formState.errors.emergency?.relationship && <p className="text-sm text-destructive">{form.formState.errors.emergency.relationship.message}</p>}
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="emergency-phone">Contact Number</Label>
+                  <Input id="emergency-phone" {...form.register('emergency.phone')} />
+                  {form.formState.errors.emergency?.phone && <p className="text-sm text-destructive">{form.formState.errors.emergency.phone.message}</p>}
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Declaration Tab */}
+          <TabsContent value="declaration" className="space-y-4">
+            <Card>
+              <CardHeader>
+                <CardTitle>Declaration and Consent</CardTitle>
+                <CardDescription>Please review and accept the following.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex items-start space-x-2">
+                  <Checkbox
+                    id="declaration1"
+                    checked={form.watch('declaration1')}
+                    onCheckedChange={(checked) => form.setValue('declaration1', !!checked)}
                   />
-                  {renderPreview('visaNotice')}
+                  <Label htmlFor="declaration1" className="text-sm leading-none">
+                    I declare that the information I have provided is accurate and true to the best of my knowledge.
+                  </Label>
                 </div>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Emergency Contact */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Emergency Contact Details</CardTitle>
-          </CardHeader>
-          <CardContent className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            <div className="space-y-2">
-              <Label htmlFor="emergency-fullName">Full Name</Label>
-              <Input id="emergency-fullName" {...form.register('emergency.fullName')} />
-              {form.formState.errors.emergency?.fullName && <p className="text-sm text-destructive">{form.formState.errors.emergency.fullName.message}</p>}
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="emergency-relationship">Relationship</Label>
-              <Input id="emergency-relationship" {...form.register('emergency.relationship')} />
-              {form.formState.errors.emergency?.relationship && <p className="text-sm text-destructive">{form.formState.errors.emergency.relationship.message}</p>}
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="emergency-phone">Contact Number</Label>
-              <Input id="emergency-phone" {...form.register('emergency.phone')} />
-              {form.formState.errors.emergency?.phone && <p className="text-sm text-destructive">{form.formState.errors.emergency.phone.message}</p>}
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Declaration and Consent */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Declaration and Consent</CardTitle>
-            <CardDescription>Please review and accept the following.</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex items-start space-x-2">
-              <Checkbox
-                id="declaration1"
-                checked={form.watch('declaration1')}
-                onCheckedChange={(checked) => form.setValue('declaration1', !!checked)}
-              />
-              <Label htmlFor="declaration1" className="text-sm leading-none">
-                I declare that the information I have provided is accurate and true to the best of my knowledge.
-              </Label>
-            </div>
-            {form.formState.errors.declaration1 && <p className="text-sm text-destructive">{form.formState.errors.declaration1.message}</p>}
-            <div className="flex items-start space-x-2">
-              <Checkbox
-                id="declaration2"
-                checked={form.watch('declaration2')}
-                onCheckedChange={(checked) => form.setValue('declaration2', !!checked)}
-              />
-              <Label htmlFor="declaration2" className="text-sm leading-none">
-                I consent to WE WILL AUSTRALIA storing and using my information for internal purposes.
-              </Label>
-            </div>
-            {form.formState.errors.declaration2 && <p className="text-sm text-destructive">{form.formState.errors.declaration2.message}</p>}
-          </CardContent>
-        </Card>
+                {form.formState.errors.declaration1 && <p className="text-sm text-destructive">{form.formState.errors.declaration1.message}</p>}
+                <div className="flex items-start space-x-2">
+                  <Checkbox
+                    id="declaration2"
+                    checked={form.watch('declaration2')}
+                    onCheckedChange={(checked) => form.setValue('declaration2', !!checked)}
+                  />
+                  <Label htmlFor="declaration2" className="text-sm leading-none">
+                    I consent to WE WILL AUSTRALIA storing and using my information for internal purposes.
+                  </Label>
+                </div>
+                {form.formState.errors.declaration2 && <p className="text-sm text-destructive">{form.formState.errors.declaration2.message}</p>}
+              </CardContent>
+            </Card>
+          </TabsContent>
+        </Tabs>
 
         <CardFooter className="flex justify-start">
           <Button type="submit" disabled={loading || !form.formState.isValid}>

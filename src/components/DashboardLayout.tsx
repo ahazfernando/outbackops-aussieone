@@ -68,7 +68,18 @@ function AppSidebar() {
       <SidebarContent>
         <div className="p-4 border-b border-sidebar-border">
           {!isCollapsed && (
-            <h2 className="text-lg font-bold text-sidebar-foreground">We Will AU</h2>
+            <img 
+              src="/logos/WWA - White (1).png" 
+              alt="We Will AU" 
+              className="h-8 w-auto object-contain"
+            />
+          )}
+          {isCollapsed && (
+            <img 
+              src="/logos/WWA - White (1).png" 
+              alt="We Will AU" 
+              className="h-8 w-auto object-contain mx-auto"
+            />
           )}
         </div>
 
