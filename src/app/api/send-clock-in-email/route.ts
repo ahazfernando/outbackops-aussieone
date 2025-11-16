@@ -116,9 +116,20 @@ export async function POST(request: NextRequest) {
     console.log('Email sent successfully via Resend:', data);
     return NextResponse.json({ success: true, data });
   } catch (error: any) {
-    console.error('Email API error:', error);
+    console.error('Email API catch block - Full error:', {
+      error: error,
+      message: error?.message,
+      stack: error?.stack,
+      name: error?.name,
+      cause: error?.cause,
+      toString: String(error)
+    });
     return NextResponse.json(
-      { error: 'Internal server error', details: error.message },
+      { 
+        error: 'Internal server error', 
+        message: error?.message || 'Unknown error',
+        details: error?.stack || String(error)
+      },
       { status: 500 }
     );
   }

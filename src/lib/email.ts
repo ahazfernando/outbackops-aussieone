@@ -19,7 +19,12 @@ export async function sendClockInEmail({
   adminEmail,
 }: ClockInEmailParams): Promise<{ success: boolean; error?: string }> {
   try {
-    console.log('Attempting to send email to:', adminEmail);
+    console.log('Attempting to send email to:', adminEmail, {
+      userName,
+      userEmail,
+      clockInTime: clockInTime instanceof Date ? clockInTime.toISOString() : clockInTime,
+    });
+    
     const response = await fetch('/api/send-clock-in-email', {
       method: 'POST',
       headers: {
@@ -33,30 +38,49 @@ export async function sendClockInEmail({
       }),
     });
 
+    console.log('API Response status:', response.status, response.statusText);
+
     let data;
-    try {
-      data = await response.json();
-    } catch (parseError) {
+    const contentType = response.headers.get('content-type');
+    
+    if (contentType && contentType.includes('application/json')) {
+      try {
+        data = await response.json();
+        console.log('API Response data:', data);
+      } catch (parseError: any) {
+        console.error('Failed to parse JSON response:', parseError);
+        const text = await response.text();
+        console.error('Raw response text:', text);
+        return { success: false, error: `Failed to parse response: ${parseError.message}. Status: ${response.status}` };
+      }
+    } else {
       const text = await response.text();
-      console.error('Failed to parse API response. Status:', response.status, 'Response:', text);
-      return { success: false, error: `API returned status ${response.status}: ${text}` };
+      console.error('Non-JSON response. Status:', response.status, 'Content-Type:', contentType, 'Response:', text);
+      return { success: false, error: `API returned non-JSON response (${response.status}): ${text.substring(0, 200)}` };
     }
 
     if (!response.ok) {
-      console.error('Failed to send email - API error:', {
+      const errorMessage = data?.error || data?.message || data?.details || `HTTP ${response.status}: ${response.statusText}`;
+      console.error('Failed to send email - Full error details:', {
         status: response.status,
         statusText: response.statusText,
         data: data,
+        errorMessage: errorMessage,
         fullResponse: JSON.stringify(data, null, 2)
       });
-      return { success: false, error: data?.error || data?.details || `API error: ${response.status} ${response.statusText}` };
+      return { success: false, error: errorMessage };
     }
 
     console.log('Email sent successfully to:', adminEmail, data);
     return { success: true };
   } catch (error: any) {
-    console.error('Error sending clock-in email:', error);
-    return { success: false, error: error.message || 'Failed to send email' };
+    console.error('Network or other error sending clock-in email:', {
+      error: error,
+      message: error?.message,
+      stack: error?.stack,
+      name: error?.name
+    });
+    return { success: false, error: error?.message || 'Network error: Failed to send email' };
   }
 }
 
