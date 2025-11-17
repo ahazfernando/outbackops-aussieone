@@ -6,7 +6,10 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { userName, userEmail, clockInTime } = body;
 
+    console.log('Email API called with:', { userName, userEmail, clockInTime });
+
     if (!userName || !userEmail || !clockInTime) {
+      console.error('Missing required fields:', { userName, userEmail, clockInTime });
       return NextResponse.json(
         { error: 'Missing required fields' },
         { status: 400 }
@@ -20,6 +23,8 @@ export async function POST(request: NextRequest) {
         { status: 500 }
       );
     }
+
+    console.log('Resend API key found, from email:', process.env.RESEND_FROM_EMAIL || 'onboarding@resend.dev');
 
     // Initialize Resend only when needed and after checking for API key
     const resend = new Resend(process.env.RESEND_API_KEY);
@@ -46,6 +51,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    console.log('Sending email via Resend to:', adminEmail);
+    
     const { data, error } = await resend.emails.send({
       from: process.env.RESEND_FROM_EMAIL || 'onboarding@resend.dev',
       to: adminEmail,
@@ -88,18 +95,93 @@ export async function POST(request: NextRequest) {
     });
 
     if (error) {
-      console.error('Resend error:', error);
+      // Safely serialize error object
+      let errorDetails: any = {};
+      try {
+        if (typeof error === 'object' && error !== null) {
+          const errorAny = error as any;
+          errorDetails = {
+            message: error?.message || String(error),
+            name: error?.name || 'Error',
+            ...(error?.statusCode && { statusCode: error.statusCode }),
+            ...(errorAny?.code && { code: errorAny.code }),
+          };
+          
+          // Try to stringify the full error for logging
+          try {
+            errorDetails.fullError = JSON.stringify(error, Object.getOwnPropertyNames(error), 2);
+          } catch (e) {
+            errorDetails.fullError = String(error);
+          }
+        } else {
+          errorDetails = { message: String(error) };
+        }
+      } catch (e) {
+        errorDetails = { message: 'Failed to serialize error', originalError: String(error) };
+      }
+      
+      console.error('Resend error details:', {
+        error: error,
+        errorType: typeof error,
+        errorDetails: errorDetails,
+        errorMessage: error?.message,
+        errorName: error?.name,
+      });
+      
       return NextResponse.json(
-        { error: 'Failed to send email', details: error },
+        { 
+          error: 'Failed to send email', 
+          message: errorDetails.message || 'Unknown Resend error',
+          details: errorDetails
+        },
         { status: 500 }
       );
     }
 
+    console.log('Email sent successfully via Resend:', data);
     return NextResponse.json({ success: true, data });
   } catch (error: any) {
-    console.error('Email API error:', error);
+    // Safely extract error information
+    let errorMessage = 'Unknown error';
+    let errorDetails: any = {};
+    
+    try {
+      if (error?.message) {
+        errorMessage = error.message;
+      } else if (typeof error === 'string') {
+        errorMessage = error;
+      } else {
+        errorMessage = String(error);
+      }
+      
+      errorDetails = {
+        message: errorMessage,
+        name: error?.name || 'Error',
+        ...(error?.stack && { stack: error.stack }),
+        ...(error?.cause && { cause: String(error.cause) }),
+      };
+    } catch (e) {
+      errorMessage = 'Failed to extract error information';
+      errorDetails = { originalError: String(error) };
+    }
+    
+    console.error('Email API catch block - Full error:', {
+      error: error,
+      errorMessage: errorMessage,
+      errorDetails: errorDetails,
+      message: error?.message,
+      stack: error?.stack,
+      name: error?.name,
+      cause: error?.cause,
+      toString: String(error)
+    });
+    
     return NextResponse.json(
-      { error: 'Internal server error', details: error.message },
+      { 
+        error: 'Internal server error', 
+        message: errorMessage,
+        details: errorDetails
+      },
       { status: 500 }
     );
   }
