@@ -43,6 +43,7 @@ import {
   where,
   getDocs,
   Timestamp,
+  deleteField,
 } from 'firebase/firestore'
 import { format } from 'date-fns'
 import { Upload, CalendarIcon, Pencil, Download, ArrowRight, Clock, Crown, CheckSquare, Star, FileText, User, Phone, Shield } from 'lucide-react'
@@ -164,6 +165,15 @@ const Profile: React.FC = () => {
     visaNotice: { file: null, preview: '' },
   })
   const [loading, setLoading] = useState(true)
+  const [uploadingFiles, setUploadingFiles] = useState<Record<UploadKey, boolean>>({
+    profilePhoto: false,
+    idFrontPhoto: false,
+    idBackPhoto: false,
+    selfiePhoto: false,
+    passportPhoto: false,
+    contractDoc: false,
+    visaNotice: false,
+  })
   const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(null)
   const [dobDate, setDobDate] = useState<Date | undefined>(undefined)
   const [attendanceMetrics, setAttendanceMetrics] = useState({
@@ -423,6 +433,132 @@ const Profile: React.FC = () => {
 
   const setUploadPreview = (key: UploadKey, preview: string) => {
     setUploads((prev) => ({ ...prev, [key]: { ...prev[key], preview } }))
+  }
+
+  const removeFile = async (key: UploadKey) => {
+    if (!currentUser) return
+
+    try {
+      // Remove from Firestore
+      const existingProfile = await getDoc(doc(db, 'profiles', currentUser.uid))
+      if (existingProfile.exists()) {
+        await setDoc(
+          doc(db, 'profiles', currentUser.uid),
+          {
+            [key]: deleteField(), // Remove the field
+            updatedAt: new Date().toISOString(),
+          },
+          { merge: true }
+        )
+      }
+
+      // Clear from state
+      setUploads((prev) => ({
+        ...prev,
+        [key]: { file: null, preview: '' },
+      }))
+
+      toast({
+        title: 'File removed',
+        description: `${key === 'profilePhoto' ? 'Profile picture' : key} has been removed.`,
+      })
+    } catch (error) {
+      console.error(`Error removing ${key}:`, error)
+      toast({
+        variant: 'destructive',
+        title: 'Error',
+        description: 'Failed to remove file. Please try again.',
+      })
+    }
+  }
+
+  const autoUploadFile = async (key: UploadKey, file: File) => {
+    if (!currentUser) {
+      toast({
+        variant: 'destructive',
+        title: 'User not authenticated',
+        description: 'Please log in to upload files.',
+      })
+      return
+    }
+
+    // Store the current preview to revoke blob URL later
+    const currentPreview = uploads[key].preview
+    const isBlobUrl = currentPreview.startsWith('blob:')
+
+    // Set uploading state and create preview for the new file
+    setUploadingFiles((prev) => ({ ...prev, [key]: true }))
+    const preview = URL.createObjectURL(file)
+    setUploads((prev) => ({ ...prev, [key]: { file, preview } }))
+
+    try {
+      const resourceType: 'image' | 'raw' = key === 'contractDoc' ? 'raw' : 'image'
+      // Organize uploads by folder: profile photos go to 'profiles', documents to 'documents'
+      const folder = key === 'profilePhoto' 
+        ? `profiles/${currentUser.uid}` 
+        : key === 'contractDoc' 
+        ? `documents/${currentUser.uid}`
+        : `profiles/${currentUser.uid}/documents`
+      
+      // Upload to Cloudinary
+      const url = await uploadToCloudinary(file, resourceType, folder)
+      
+      // Save to Firestore immediately
+      const existingProfile = await getDoc(doc(db, 'profiles', currentUser.uid))
+      const existingData = existingProfile.exists() ? existingProfile.data() : {}
+      
+      await setDoc(
+        doc(db, 'profiles', currentUser.uid),
+        {
+          ...existingData,
+          [key]: url,
+          updatedAt: new Date().toISOString(),
+        },
+        { merge: true }
+      )
+
+      // Update state with Cloudinary URL and clear file
+      setUploads((prev) => ({
+        ...prev,
+        [key]: { file: null, preview: url },
+      }))
+
+      // Revoke blob URLs
+      if (isBlobUrl) {
+        URL.revokeObjectURL(currentPreview)
+      }
+      URL.revokeObjectURL(preview)
+
+      toast({
+        title: 'File uploaded successfully',
+        description: `${key === 'profilePhoto' ? 'Profile picture' : key} has been saved.`,
+      })
+    } catch (error) {
+      console.error(`Error auto-uploading ${key}:`, error)
+      toast({
+        variant: 'destructive',
+        title: `Failed to upload ${key === 'profilePhoto' ? 'profile picture' : key}`,
+        description: error instanceof Error ? error.message : 'Upload failed. Please try again.',
+      })
+      // Keep the file in state so user can try again, but revoke the preview blob URL
+      URL.revokeObjectURL(preview)
+      // Restore previous preview if it was a saved URL
+      if (isBlobUrl && currentPreview) {
+        // If there was a previous blob URL, we already revoked it, so clear preview
+        setUploads((prev) => ({
+          ...prev,
+          [key]: { ...prev[key], preview: '' },
+        }))
+      } else if (!isBlobUrl && currentPreview) {
+        // Restore the previous saved URL
+        setUploads((prev) => ({
+          ...prev,
+          [key]: { ...prev[key], preview: currentPreview },
+        }))
+      }
+    } finally {
+      setUploadingFiles((prev) => ({ ...prev, [key]: false }))
+    }
   }
 
   const uploadToCloudinary = async (file: File, resourceType: 'image' | 'raw', folder?: string): Promise<string> => {
@@ -794,12 +930,9 @@ const Profile: React.FC = () => {
                 }}
                 imageSrc={imageToCrop || ''}
                 onCropComplete={(croppedFile) => {
-                  setUploadFile('profilePhoto', croppedFile)
                   setImageToCrop(null)
-                  toast({
-                    title: 'Profile picture ready',
-                    description: 'Click "Save Profile" to save your changes.',
-                  })
+                  // Auto-upload the cropped profile photo
+                  autoUploadFile('profilePhoto', croppedFile)
                 }}
                 aspectRatio={1}
               />
@@ -1087,15 +1220,20 @@ const Profile: React.FC = () => {
                     preview={uploads.idFrontPhoto.preview}
                     onChange={(file) => {
                       if (file) {
-                        setUploadFile('idFrontPhoto', file)
+                        autoUploadFile('idFrontPhoto', file)
                       } else {
-                        setUploads((prev) => ({
-                          ...prev,
-                          idFrontPhoto: { file: null, preview: '' },
-                        }))
+                        // If there's a saved preview URL, remove it from Firestore
+                        if (uploads.idFrontPhoto.preview && (uploads.idFrontPhoto.preview.startsWith('http://') || uploads.idFrontPhoto.preview.startsWith('https://'))) {
+                          removeFile('idFrontPhoto')
+                        } else {
+                          setUploads((prev) => ({
+                            ...prev,
+                            idFrontPhoto: { file: null, preview: '' },
+                          }))
+                        }
                       }
                     }}
-                    disabled={loading}
+                    disabled={loading || uploadingFiles.idFrontPhoto}
                   />
                   <DragDropFileUpload
                     label="Back photo of your Sri Lankan NIC / driver license or Australian driver license"
@@ -1106,15 +1244,19 @@ const Profile: React.FC = () => {
                     preview={uploads.idBackPhoto.preview}
                     onChange={(file) => {
                       if (file) {
-                        setUploadFile('idBackPhoto', file)
+                        autoUploadFile('idBackPhoto', file)
                       } else {
-                        setUploads((prev) => ({
-                          ...prev,
-                          idBackPhoto: { file: null, preview: '' },
-                        }))
+                        if (uploads.idBackPhoto.preview && (uploads.idBackPhoto.preview.startsWith('http://') || uploads.idBackPhoto.preview.startsWith('https://'))) {
+                          removeFile('idBackPhoto')
+                        } else {
+                          setUploads((prev) => ({
+                            ...prev,
+                            idBackPhoto: { file: null, preview: '' },
+                          }))
+                        }
                       }
                     }}
-                    disabled={loading}
+                    disabled={loading || uploadingFiles.idBackPhoto}
                   />
                   <DragDropFileUpload
                     label="Clear photo of yourself with a white background to use as the company ID"
@@ -1125,15 +1267,19 @@ const Profile: React.FC = () => {
                     preview={uploads.selfiePhoto.preview}
                     onChange={(file) => {
                       if (file) {
-                        setUploadFile('selfiePhoto', file)
+                        autoUploadFile('selfiePhoto', file)
                       } else {
-                        setUploads((prev) => ({
-                          ...prev,
-                          selfiePhoto: { file: null, preview: '' },
-                        }))
+                        if (uploads.selfiePhoto.preview && (uploads.selfiePhoto.preview.startsWith('http://') || uploads.selfiePhoto.preview.startsWith('https://'))) {
+                          removeFile('selfiePhoto')
+                        } else {
+                          setUploads((prev) => ({
+                            ...prev,
+                            selfiePhoto: { file: null, preview: '' },
+                          }))
+                        }
                       }
                     }}
-                    disabled={loading}
+                    disabled={loading || uploadingFiles.selfiePhoto}
                   />
                   <DragDropFileUpload
                     label="A photo of your passport detail page"
@@ -1144,15 +1290,19 @@ const Profile: React.FC = () => {
                     preview={uploads.passportPhoto.preview}
                     onChange={(file) => {
                       if (file) {
-                        setUploadFile('passportPhoto', file)
+                        autoUploadFile('passportPhoto', file)
                       } else {
-                        setUploads((prev) => ({
-                          ...prev,
-                          passportPhoto: { file: null, preview: '' },
-                        }))
+                        if (uploads.passportPhoto.preview && (uploads.passportPhoto.preview.startsWith('http://') || uploads.passportPhoto.preview.startsWith('https://'))) {
+                          removeFile('passportPhoto')
+                        } else {
+                          setUploads((prev) => ({
+                            ...prev,
+                            passportPhoto: { file: null, preview: '' },
+                          }))
+                        }
                       }
                     }}
-                    disabled={loading}
+                    disabled={loading || uploadingFiles.passportPhoto}
                   />
                   <div className="md:col-span-2">
                     <DragDropFileUpload
@@ -1164,15 +1314,19 @@ const Profile: React.FC = () => {
                       preview={uploads.contractDoc.preview}
                       onChange={(file) => {
                         if (file) {
-                          setUploadFile('contractDoc', file)
+                          autoUploadFile('contractDoc', file)
                         } else {
-                          setUploads((prev) => ({
-                            ...prev,
-                            contractDoc: { file: null, preview: '' },
-                          }))
+                          if (uploads.contractDoc.preview && (uploads.contractDoc.preview.startsWith('http://') || uploads.contractDoc.preview.startsWith('https://'))) {
+                            removeFile('contractDoc')
+                          } else {
+                            setUploads((prev) => ({
+                              ...prev,
+                              contractDoc: { file: null, preview: '' },
+                            }))
+                          }
                         }
                       }}
-                      disabled={loading}
+                      disabled={loading || uploadingFiles.contractDoc}
                     />
                   </div>
                 </div>
@@ -1207,15 +1361,19 @@ const Profile: React.FC = () => {
                       preview={uploads.visaNotice.preview}
                       onChange={(file) => {
                         if (file) {
-                          setUploadFile('visaNotice', file)
+                          autoUploadFile('visaNotice', file)
                         } else {
-                          setUploads((prev) => ({
-                            ...prev,
-                            visaNotice: { file: null, preview: '' },
-                          }))
+                          if (uploads.visaNotice.preview && (uploads.visaNotice.preview.startsWith('http://') || uploads.visaNotice.preview.startsWith('https://'))) {
+                            removeFile('visaNotice')
+                          } else {
+                            setUploads((prev) => ({
+                              ...prev,
+                              visaNotice: { file: null, preview: '' },
+                            }))
+                          }
                         }
                       }}
-                      disabled={loading}
+                      disabled={loading || uploadingFiles.visaNotice}
                     />
                   </div>
                 )}
