@@ -550,18 +550,50 @@ const Profile: React.FC = () => {
       })
     } catch (error) {
       console.error(`Error auto-uploading ${key}:`, error)
-      const errorMessage = error instanceof Error ? error.message : 'Upload failed. Please try again.'
+      
+      // Extract error message more robustly
+      let errorMessage = 'Upload failed. Please try again.'
+      if (error instanceof Error) {
+        errorMessage = error.message || errorMessage
+      } else if (typeof error === 'string') {
+        errorMessage = error
+      } else if (error && typeof error === 'object' && 'message' in error) {
+        errorMessage = String((error as any).message) || errorMessage
+      }
+      
+      // If error message is still generic, try to get more details
+      if (errorMessage === 'Upload failed. Please try again.' || !errorMessage.trim()) {
+        if (error && typeof error === 'object') {
+          const errorStr = JSON.stringify(error, null, 2)
+          console.error('Full error object:', errorStr)
+          // Try to extract meaningful info from error object
+          if ('error' in error && typeof (error as any).error === 'object') {
+            const innerError = (error as any).error
+            if (innerError.message) {
+              errorMessage = innerError.message
+            } else if (innerError.error) {
+              errorMessage = innerError.error
+            }
+          }
+        }
+      }
+      
       console.error('Full error details:', {
         key,
         error,
         errorMessage,
+        errorType: typeof error,
+        errorConstructor: error?.constructor?.name,
         cloudName: process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME,
         uploadPreset: process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET,
+        hasCloudName: !!process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME,
+        hasUploadPreset: !!process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET,
       })
+      
       toast({
         variant: 'destructive',
         title: `Failed to upload ${key === 'profilePhoto' ? 'profile picture' : key}`,
-        description: errorMessage,
+        description: errorMessage || 'Please check the browser console for more details.',
       })
       // Keep the file in state so user can try again, but revoke the preview blob URL
       URL.revokeObjectURL(preview)
@@ -588,14 +620,25 @@ const Profile: React.FC = () => {
     const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME
     const uploadPreset = process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET || 'www-dashboard'
 
+    // Detailed configuration check
     if (!cloudName) {
-      console.error('Cloudinary configuration missing: NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME')
-      throw new Error('Cloudinary cloud name is not configured. Please check your environment variables.')
+      const errorMsg = 'Cloudinary cloud name is not configured. Please add NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME to your .env.local file and restart the server.'
+      console.error('Cloudinary configuration missing:', {
+        cloudName: 'MISSING',
+        uploadPreset: uploadPreset || 'MISSING',
+        allEnvVars: Object.keys(process.env).filter(k => k.includes('CLOUDINARY')),
+      })
+      throw new Error(errorMsg)
     }
 
     if (!uploadPreset) {
-      console.error('Cloudinary configuration missing: NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET')
-      throw new Error('Cloudinary upload preset is not configured. Please check your environment variables.')
+      const errorMsg = 'Cloudinary upload preset is not configured. Please add NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET to your .env.local file and restart the server.'
+      console.error('Cloudinary configuration missing:', {
+        cloudName: cloudName || 'MISSING',
+        uploadPreset: 'MISSING',
+        allEnvVars: Object.keys(process.env).filter(k => k.includes('CLOUDINARY')),
+      })
+      throw new Error(errorMsg)
     }
 
     // Log configuration for debugging (without sensitive data)
@@ -640,8 +683,8 @@ const Profile: React.FC = () => {
           
           // Provide more specific error messages
           if (errorData.error) {
-            if (errorData.error.message?.includes('Invalid preset')) {
-              errorMessage = `Invalid upload preset "${uploadPreset}". Please check that the preset exists and is set to "Unsigned" mode in Cloudinary.`
+            if (errorData.error.message?.includes('Invalid preset') || errorData.error.message?.includes('not found')) {
+              errorMessage = `Upload preset "${uploadPreset}" not found. Please create it in Cloudinary Dashboard → Settings → Upload → Upload presets. Set it to "Unsigned" mode and allow image/PDF formats.`
             } else if (errorData.error.message?.includes('File size too large')) {
               errorMessage = `File size (${(file.size / 1024 / 1024).toFixed(2)} MB) exceeds the maximum allowed size. Please use a smaller file.`
             } else if (errorData.error.message?.includes('Invalid image file')) {
