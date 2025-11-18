@@ -221,6 +221,21 @@ const Profile: React.FC = () => {
   const db = React.useMemo(() => getFirestore(app), [app])
 
   useEffect(() => {
+    // Check Cloudinary configuration on mount
+    const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME
+    const uploadPreset = process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET
+    if (!cloudName || !uploadPreset) {
+      console.warn('Cloudinary configuration missing:', {
+        cloudName: !!cloudName,
+        uploadPreset: !!uploadPreset,
+      })
+      toast({
+        variant: 'destructive',
+        title: 'Cloudinary Configuration Missing',
+        description: 'Image uploads may not work. Please check your environment variables (NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME and NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET).',
+      })
+    }
+
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       setCurrentUser(user)
       if (user) {
@@ -535,10 +550,18 @@ const Profile: React.FC = () => {
       })
     } catch (error) {
       console.error(`Error auto-uploading ${key}:`, error)
+      const errorMessage = error instanceof Error ? error.message : 'Upload failed. Please try again.'
+      console.error('Full error details:', {
+        key,
+        error,
+        errorMessage,
+        cloudName: process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME,
+        uploadPreset: process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET,
+      })
       toast({
         variant: 'destructive',
         title: `Failed to upload ${key === 'profilePhoto' ? 'profile picture' : key}`,
-        description: error instanceof Error ? error.message : 'Upload failed. Please try again.',
+        description: errorMessage,
       })
       // Keep the file in state so user can try again, but revoke the preview blob URL
       URL.revokeObjectURL(preview)
@@ -562,32 +585,108 @@ const Profile: React.FC = () => {
   }
 
   const uploadToCloudinary = async (file: File, resourceType: 'image' | 'raw', folder?: string): Promise<string> => {
+    const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME
+    const uploadPreset = process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET || 'www-dashboard'
+
+    if (!cloudName) {
+      console.error('Cloudinary configuration missing: NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME')
+      throw new Error('Cloudinary cloud name is not configured. Please check your environment variables.')
+    }
+
+    if (!uploadPreset) {
+      console.error('Cloudinary configuration missing: NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET')
+      throw new Error('Cloudinary upload preset is not configured. Please check your environment variables.')
+    }
+
+    // Log configuration for debugging (without sensitive data)
+    console.log('Uploading to Cloudinary:', {
+      cloudName,
+      uploadPreset,
+      resourceType,
+      folder,
+      fileName: file.name,
+      fileSize: `${(file.size / 1024 / 1024).toFixed(2)} MB`,
+      fileType: file.type,
+    })
+
     const formData = new FormData()
     formData.append('file', file)
-    formData.append('upload_preset', process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET!)
+    formData.append('upload_preset', uploadPreset)
     
     // Add folder if specified
     if (folder) {
       formData.append('folder', folder)
     }
 
-    const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME
-    if (!cloudName) {
-      throw new Error('Cloudinary cloud name is not configured')
+    const uploadUrl = `https://api.cloudinary.com/v1_1/${cloudName}/${resourceType}/upload`
+    console.log('Upload URL:', uploadUrl)
+
+    try {
+      const response = await fetch(uploadUrl, {
+        method: 'POST',
+        body: formData,
+      })
+
+      console.log('Cloudinary response status:', response.status, response.statusText)
+
+      if (!response.ok) {
+        let errorMessage = `Failed to upload ${resourceType === 'image' ? 'image' : 'file'}`
+        let errorDetails: any = null
+        
+        try {
+          const errorData = await response.json()
+          errorDetails = errorData
+          errorMessage = errorData.error?.message || errorData.message || errorMessage
+          
+          // Provide more specific error messages
+          if (errorData.error) {
+            if (errorData.error.message?.includes('Invalid preset')) {
+              errorMessage = `Invalid upload preset "${uploadPreset}". Please check that the preset exists and is set to "Unsigned" mode in Cloudinary.`
+            } else if (errorData.error.message?.includes('File size too large')) {
+              errorMessage = `File size (${(file.size / 1024 / 1024).toFixed(2)} MB) exceeds the maximum allowed size. Please use a smaller file.`
+            } else if (errorData.error.message?.includes('Invalid image file')) {
+              errorMessage = `Invalid file type. Please ensure the file is a valid ${resourceType === 'image' ? 'image' : 'document'}.`
+            }
+          }
+          
+          console.error('Cloudinary upload error details:', errorData)
+        } catch (e) {
+          // If response is not JSON, try to get text
+          try {
+            const text = await response.text()
+            errorMessage = text || errorMessage
+            console.error('Cloudinary upload error (text):', text)
+          } catch (textError) {
+            errorMessage = `HTTP ${response.status}: ${response.statusText}. Please check your Cloudinary configuration.`
+            console.error('Cloudinary upload error (status):', errorMessage)
+          }
+        }
+        
+        // Include more context in the error
+        const fullErrorMessage = `${errorMessage} (Status: ${response.status})`
+        throw new Error(fullErrorMessage)
+      }
+
+      const data = await response.json()
+      console.log('Cloudinary upload success:', { url: data.secure_url, public_id: data.public_id })
+      
+      if (!data.secure_url) {
+        console.error('Cloudinary response missing secure_url:', data)
+        throw new Error('Upload succeeded but no URL returned from Cloudinary')
+      }
+
+      return data.secure_url
+    } catch (error) {
+      console.error('Cloudinary upload exception:', error)
+      if (error instanceof Error) {
+        // Re-throw with more context if it's a network error
+        if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
+          throw new Error('Network error: Unable to connect to Cloudinary. Please check your internet connection and try again.')
+        }
+        throw error
+      }
+      throw new Error('Unknown error occurred during upload')
     }
-
-    const response = await fetch(
-      `https://api.cloudinary.com/v1_1/${cloudName}/${resourceType}/upload`,
-      { method: 'POST', body: formData }
-    )
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}))
-      throw new Error(errorData.error?.message || 'Upload failed')
-    }
-
-    const data = await response.json()
-    return data.secure_url
   }
 
   const onSubmit = async (values: FormDataType) => {
