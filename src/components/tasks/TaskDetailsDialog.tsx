@@ -79,8 +79,8 @@ export function TaskDetailsDialog({
     date: new Date(),
     assignedMembers: [] as string[],
     status: 'New' as TaskStatus,
-    expectedKpi: '',
-    actualKpi: '',
+    expectedKpi: undefined as number | undefined,
+    actualKpi: undefined as number | undefined,
     eta: undefined as Date | undefined,
     time: '09:00',
   });
@@ -103,8 +103,8 @@ export function TaskDetailsDialog({
         date: task.date,
         assignedMembers: task.assignedMembers,
         status: task.status,
-        expectedKpi: task.expectedKpi || '',
-        actualKpi: task.actualKpi || '',
+        expectedKpi: task.expectedKpi,
+        actualKpi: task.actualKpi,
         eta: task.eta,
         time: task.time || '09:00',
       });
@@ -438,8 +438,8 @@ export function TaskDetailsDialog({
         assignedMemberNames,
         images: [...existingImages, ...uploadedImages],
         files: [...existingFiles, ...uploadedFiles],
-        expectedKpi: formData.expectedKpi.trim() || undefined,
-        actualKpi: formData.actualKpi.trim() || undefined,
+        expectedKpi: formData.expectedKpi,
+        actualKpi: formData.actualKpi,
         eta: formData.eta,
         time: formData.time || undefined,
       });
@@ -472,18 +472,35 @@ export function TaskDetailsDialog({
   const handleStatusChange = async (newStatus: TaskStatus) => {
     if (!task) return;
 
-    // Validate that actualKpi is filled before allowing status change to Complete
+    // Validate KPI only if Expected KPI is set
     // Skip this check for collaborative tasks as they have their own completion logic
     if (newStatus === 'Complete' && !task.collaborative) {
-      const currentActualKpi = task.actualKpi?.trim() || '';
-      if (!currentActualKpi) {
-        toast({
-          title: 'Cannot complete task',
-          description: 'Please fill in the Actual KPI before completing the task',
-          variant: 'destructive',
-        });
-        return;
+      const currentActualKpi = task.actualKpi;
+      const currentExpectedKpi = task.expectedKpi;
+      
+      // Only validate KPI if Expected KPI is set
+      if (currentExpectedKpi !== undefined && currentExpectedKpi !== null) {
+        // If Expected KPI is set, Actual KPI must be set and must match
+        if (currentActualKpi === undefined || currentActualKpi === null) {
+          toast({
+            title: 'Cannot complete task',
+            description: 'Please fill in the Actual KPI before completing the task',
+            variant: 'destructive',
+          });
+          return;
+        }
+        
+        // Check if Actual KPI equals Expected KPI
+        if (currentActualKpi !== currentExpectedKpi) {
+          toast({
+            title: 'Cannot complete task',
+            description: 'Expected KPI has not been met',
+            variant: 'destructive',
+          });
+          return;
+        }
       }
+      // If Expected KPI is not set, task can be completed without KPI validation
     }
 
     try {
@@ -594,8 +611,8 @@ export function TaskDetailsDialog({
         assignedMembers: task.assignedMembers,
         assignedMemberNames,
         images: task.images, // Copy image URLs
-        expectedKpi: task.expectedKpi || undefined,
-        actualKpi: task.actualKpi || undefined,
+        expectedKpi: task.expectedKpi,
+        actualKpi: task.actualKpi,
         eta: task.eta,
         time: task.time || undefined,
         createdBy: user?.id || '',
@@ -797,12 +814,20 @@ export function TaskDetailsDialog({
               <Label>Expected KPI</Label>
               {isEditing ? (
                 <Input
-                  value={formData.expectedKpi}
-                  onChange={(e) => setFormData(prev => ({ ...prev, expectedKpi: e.target.value }))}
-                  placeholder="e.g., 95% completion rate"
+                  type="number"
+                  step="0.01"
+                  value={formData.expectedKpi ?? ''}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    setFormData(prev => ({ 
+                      ...prev, 
+                      expectedKpi: value === '' ? undefined : parseFloat(value) 
+                    }));
+                  }}
+                  placeholder="e.g., 95"
                 />
               ) : (
-                <p className="text-muted-foreground">{task.expectedKpi || 'No Expected KPI set'}</p>
+                <p className="text-muted-foreground">{task.expectedKpi !== undefined ? task.expectedKpi : 'No Expected KPI set'}</p>
               )}
             </div>
             <div className="space-y-2">
@@ -810,9 +835,17 @@ export function TaskDetailsDialog({
               {isEditingActualKpi ? (
                 <div className="flex gap-2">
                   <Input
-                    value={formData.actualKpi}
-                    onChange={(e) => setFormData(prev => ({ ...prev, actualKpi: e.target.value }))}
-                    placeholder="e.g., 92% completion rate"
+                    type="number"
+                    step="0.01"
+                    value={formData.actualKpi ?? ''}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setFormData(prev => ({ 
+                        ...prev, 
+                        actualKpi: value === '' ? undefined : parseFloat(value) 
+                      }));
+                    }}
+                    placeholder="e.g., 92"
                     disabled={isSavingActualKpi}
                   />
                   <Button
@@ -830,8 +863,8 @@ export function TaskDetailsDialog({
                           assignedMemberNames: task.assignedMemberNames || [],
                           images: task.images,
                           files: task.files,
-                          expectedKpi: task.expectedKpi || '',
-                          actualKpi: formData.actualKpi.trim() || undefined,
+                          expectedKpi: task.expectedKpi,
+                          actualKpi: formData.actualKpi,
                           eta: task.eta,
                           time: task.time || undefined,
                         });
@@ -867,7 +900,7 @@ export function TaskDetailsDialog({
                     variant="outline"
                     onClick={() => {
                       setIsEditingActualKpi(false);
-                      setFormData(prev => ({ ...prev, actualKpi: task.actualKpi || '' }));
+                      setFormData(prev => ({ ...prev, actualKpi: task.actualKpi }));
                     }}
                     disabled={isSavingActualKpi}
                   >
@@ -876,13 +909,13 @@ export function TaskDetailsDialog({
                 </div>
               ) : (
                 <div className="flex items-center gap-2">
-                  <p className="text-muted-foreground flex-1">{task.actualKpi || 'No Actual KPI set'}</p>
+                  <p className="text-muted-foreground flex-1">{task.actualKpi !== undefined ? task.actualKpi : 'No Actual KPI set'}</p>
                   <Button
                     size="sm"
                     variant="outline"
                     onClick={() => {
                       setIsEditingActualKpi(true);
-                      setFormData(prev => ({ ...prev, actualKpi: task.actualKpi || '' }));
+                      setFormData(prev => ({ ...prev, actualKpi: task.actualKpi }));
                     }}
                   >
                     <Edit className="h-4 w-4" />
@@ -1603,8 +1636,8 @@ export function TaskDetailsDialog({
                       date: task.date,
                       assignedMembers: task.assignedMembers,
                       status: task.status,
-                      expectedKpi: task.expectedKpi || '',
-                      actualKpi: task.actualKpi || '',
+        expectedKpi: task.expectedKpi,
+        actualKpi: task.actualKpi,
                       eta: task.eta,
                       time: task.time || '09:00',
                     });

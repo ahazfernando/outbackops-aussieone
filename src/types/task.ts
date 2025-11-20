@@ -35,8 +35,8 @@ export interface Task {
   assignedMemberNames?: string[]; // Array of user names for display
   images: (string | TaskImage)[]; // Array of Cloudinary image URLs or objects with url and description
   files?: (string | TaskFile)[]; // Array of Cloudinary file URLs or objects with url, name and description
-  expectedKpi?: string; // Expected Key Performance Indicator
-  actualKpi?: string; // Actual Key Performance Indicator
+  expectedKpi?: number; // Expected Key Performance Indicator
+  actualKpi?: number; // Actual Key Performance Indicator
   eta?: Date; // Estimated Time of Arrival / Estimated Completion Date
   time?: string; // Task time (HH:MM format)
   createdAt: Date;
@@ -64,8 +64,8 @@ export interface FirestoreTask {
   assignedMemberNames?: string[];
   images: (string | { url: string; description?: string })[];
   files?: (string | { url: string; name: string; description?: string })[];
-  expectedKpi?: string;
-  actualKpi?: string;
+  expectedKpi?: number;
+  actualKpi?: number;
   eta?: any; // Firestore Timestamp
   time?: string;
   createdAt: any; // Firestore Timestamp

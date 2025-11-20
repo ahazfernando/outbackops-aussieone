@@ -56,8 +56,12 @@ export function convertFirestoreTask(docData: any, docId: string): Task {
     assignedMemberNames: docData.assignedMemberNames || [],
     images,
     files: files.length > 0 ? files : undefined,
-    expectedKpi: docData.expectedKpi || '',
-    actualKpi: docData.actualKpi || '',
+    expectedKpi: docData.expectedKpi !== undefined && docData.expectedKpi !== null && docData.expectedKpi !== '' 
+      ? (typeof docData.expectedKpi === 'number' ? docData.expectedKpi : parseFloat(docData.expectedKpi)) 
+      : undefined,
+    actualKpi: docData.actualKpi !== undefined && docData.actualKpi !== null && docData.actualKpi !== '' 
+      ? (typeof docData.actualKpi === 'number' ? docData.actualKpi : parseFloat(docData.actualKpi)) 
+      : undefined,
     eta: docData.eta?.toDate() || undefined,
     time: docData.time || '',
     createdAt: docData.createdAt?.toDate() || new Date(),
@@ -87,8 +91,8 @@ export async function createTask(taskData: {
   assignedMemberNames: string[];
   images: (string | TaskImage)[];
   files?: (string | TaskFile)[];
-  expectedKpi?: string;
-  actualKpi?: string;
+  expectedKpi?: number;
+  actualKpi?: number;
   eta?: Date;
   time?: string;
   createdBy: string;
@@ -124,8 +128,8 @@ export async function createTask(taskData: {
       assignedMemberNames: taskData.assignedMemberNames,
       images: sanitizedImages,
       files: sanitizedFiles,
-      expectedKpi: taskData.expectedKpi || '',
-      actualKpi: taskData.actualKpi || '',
+      expectedKpi: taskData.expectedKpi ?? null,
+      actualKpi: taskData.actualKpi ?? null,
       eta: taskData.eta ? Timestamp.fromDate(taskData.eta) : null,
       time: taskData.time || '',
       createdAt: now,
@@ -175,12 +179,23 @@ export async function updateTaskStatus(
     const isCollaborative = currentData.collaborative === true;
     const assignedMembers = currentData.assignedMembers || [];
     const completedBy = currentData.completedBy || [];
-    const actualKpi = currentData.actualKpi || '';
+    const actualKpi = currentData.actualKpi;
+    const expectedKpi = currentData.expectedKpi;
     
-    // Validate that actualKpi is filled before allowing status change to Complete
+    // Validate KPI only if Expected KPI is set
     // (Skip this check for collaborative tasks as they have their own completion logic)
-    if (status === 'Complete' && !isCollaborative && (!actualKpi || actualKpi.trim() === '')) {
-      throw new Error('Cannot complete task: Actual KPI must be filled before completing the task');
+    if (status === 'Complete' && !isCollaborative) {
+      // Only validate KPI if Expected KPI is set
+      if (expectedKpi !== undefined && expectedKpi !== null) {
+        // If Expected KPI is set, Actual KPI must be set and must match
+        if (actualKpi === undefined || actualKpi === null) {
+          throw new Error('Cannot complete task: Actual KPI must be filled before completing the task');
+        }
+        if (actualKpi !== expectedKpi) {
+          throw new Error('Expected KPI has not been met');
+        }
+      }
+      // If Expected KPI is not set, task can be completed without KPI validation
     }
     
     // Handle collaborative task completion logic
@@ -221,19 +236,35 @@ export async function updateTaskStatus(
         
         const updatedHistory = [...existingHistory, completionStatusChange];
         
-        // If all members completed, check if actualKpi is filled before marking as Complete
+        // If all members completed, check KPI validation only if Expected KPI is set
         if (allCompleted) {
-          // Validate that actualKpi is filled before allowing status change to Complete
-          if (!actualKpi || actualKpi.trim() === '') {
-            // Keep as Progress if actualKpi is not filled
-            await updateDoc(doc(db, 'tasks', taskId), {
-              status: 'Progress' as TaskStatus,
-              completedBy: newCompletedBy,
-              statusHistory: updatedHistory,
-              updatedAt: now,
-            });
-            throw new Error('Cannot complete task: Actual KPI must be filled before completing the task');
+          const expectedKpi = currentData.expectedKpi;
+          // Only validate KPI if Expected KPI is set
+          if (expectedKpi !== undefined && expectedKpi !== null) {
+            // If Expected KPI is set, Actual KPI must be set and must match
+            if (actualKpi === undefined || actualKpi === null) {
+              // Keep as Progress if actualKpi is not filled
+              await updateDoc(doc(db, 'tasks', taskId), {
+                status: 'Progress' as TaskStatus,
+                completedBy: newCompletedBy,
+                statusHistory: updatedHistory,
+                updatedAt: now,
+              });
+              throw new Error('Cannot complete task: Actual KPI must be filled before completing the task');
+            }
+            // Validate that actualKpi equals expectedKpi
+            if (actualKpi !== expectedKpi) {
+              // Keep as Progress if KPI doesn't match
+              await updateDoc(doc(db, 'tasks', taskId), {
+                status: 'Progress' as TaskStatus,
+                completedBy: newCompletedBy,
+                statusHistory: updatedHistory,
+                updatedAt: now,
+              });
+              throw new Error('Expected KPI has not been met');
+            }
           }
+          // If Expected KPI is not set, task can be completed without KPI validation
           
           const finalStatusChange = {
             status: 'Complete' as TaskStatus,
@@ -321,8 +352,8 @@ export async function updateTaskStatus(
             assignedMembers: currentData.assignedMembers,
             assignedMemberNames: currentData.assignedMemberNames || [],
             images: [], // Start with no images for the new instance
-            expectedKpi: currentData.expectedKpi || '',
-            actualKpi: currentData.actualKpi || '',
+            expectedKpi: currentData.expectedKpi,
+            actualKpi: currentData.actualKpi,
             eta: etaDate,
             time: currentData.time || '',
             createdBy: options?.changedBy || currentData.createdBy,
@@ -439,8 +470,8 @@ export async function updateTask(
     assignedMemberNames: string[];
     images: (string | TaskImage)[];
     files?: (string | TaskFile)[];
-    expectedKpi?: string;
-    actualKpi?: string;
+    expectedKpi?: number;
+    actualKpi?: number;
     eta?: Date;
     time?: string;
   }
@@ -458,8 +489,8 @@ export async function updateTask(
       assignedMembers: taskData.assignedMembers,
       assignedMemberNames: taskData.assignedMemberNames,
       images: sanitizedImages,
-      expectedKpi: taskData.expectedKpi || '',
-      actualKpi: taskData.actualKpi || '',
+      expectedKpi: taskData.expectedKpi ?? null,
+      actualKpi: taskData.actualKpi ?? null,
       eta: taskData.eta ? Timestamp.fromDate(taskData.eta) : null,
       time: taskData.time || '',
       updatedAt: Timestamp.now(),

@@ -44,8 +44,8 @@ export function CreateTaskDialog({ users, onTaskCreated }: CreateTaskDialogProps
     date: new Date(),
     assignedMembers: [] as string[],
     images: [] as string[],
-    expectedKpi: '',
-    actualKpi: '',
+    expectedKpi: undefined as number | undefined,
+    actualKpi: undefined as number | undefined,
     eta: new Date(),
     time: '09:00',
     recurring: false,
@@ -341,8 +341,8 @@ export function CreateTaskDialog({ users, onTaskCreated }: CreateTaskDialogProps
         assignedMemberNames,
         images: uploadedImages,
         files: uploadedFiles.length > 0 ? uploadedFiles : undefined,
-        expectedKpi: formData.expectedKpi.trim() || undefined,
-        actualKpi: formData.actualKpi.trim() || undefined,
+        expectedKpi: formData.expectedKpi,
+        actualKpi: formData.actualKpi,
         eta: formData.eta,
         time: formData.time || undefined,
         createdBy: user?.id || '',
@@ -367,8 +367,8 @@ export function CreateTaskDialog({ users, onTaskCreated }: CreateTaskDialogProps
         date: new Date(),
         assignedMembers: [],
         images: [],
-        expectedKpi: '',
-        actualKpi: '',
+        expectedKpi: undefined,
+        actualKpi: undefined,
         eta: new Date(),
         time: '09:00',
         recurring: false,
@@ -514,9 +514,17 @@ export function CreateTaskDialog({ users, onTaskCreated }: CreateTaskDialogProps
             <Label htmlFor="expectedKpi">Expected KPI</Label>
             <Input
               id="expectedKpi"
-              placeholder="e.g., 95% completion rate"
-              value={formData.expectedKpi}
-              onChange={(e) => setFormData(prev => ({ ...prev, expectedKpi: e.target.value }))}
+              type="number"
+              step="0.01"
+              placeholder="e.g., 95"
+              value={formData.expectedKpi ?? ''}
+              onChange={(e) => {
+                const value = e.target.value;
+                setFormData(prev => ({ 
+                  ...prev, 
+                  expectedKpi: value === '' ? undefined : parseFloat(value) 
+                }));
+              }}
             />
           </div>
 
