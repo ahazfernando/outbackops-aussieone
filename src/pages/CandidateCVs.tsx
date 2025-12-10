@@ -335,7 +335,7 @@ const CandidateCVs = () => {
       // Add optional fields
       if (formData.email.trim()) candidateData.email = formData.email.trim();
       if (formData.phone.trim()) candidateData.phone = formData.phone.trim();
-      if (formData.experienceLevel && formData.experienceLevel !== '') {
+      if (formData.experienceLevel) {
         candidateData.experienceLevel = formData.experienceLevel;
       }
       if (formData.location.trim()) candidateData.location = formData.location.trim();
