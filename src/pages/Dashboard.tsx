@@ -508,7 +508,17 @@ const Dashboard = () => {
     }
   };
 
-  const stats = [
+  const stats: Array<{
+    title: string;
+    value: string;
+    loading: boolean;
+    icon: React.ComponentType<any>;
+    gradient: string;
+    iconBg: string;
+    iconColor: string;
+    borderColor: string;
+    adminOnly?: boolean;
+  }> = [
     { 
       title: 'Clock In Today', 
       value: kpiData.clockInToday.value, 

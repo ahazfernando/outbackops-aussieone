@@ -1202,21 +1202,22 @@ const Settings = () => {
                             {updatingRole[user.id] ? (
                               <Skeleton className="h-8 w-[120px]" />
                             ) : (
-                              <Select
-                                value={user.role || 'itteam'}
-                                onValueChange={(value) => handleRoleChange(user.id, value as UserRole)}
-                                disabled={updatingRole[user.id]}
-                                onClick={(e) => e.stopPropagation()}
-                              >
-                                <SelectTrigger className="w-[120px] h-8 text-sm border-2 border-primary/20 hover:border-primary/50 transition-all">
-                                  <SelectValue />
-                                </SelectTrigger>
+                              <div onClick={(e) => e.stopPropagation()}>
+                                <Select
+                                  value={user.role || 'itteam'}
+                                  onValueChange={(value) => handleRoleChange(user.id, value as UserRole)}
+                                  disabled={updatingRole[user.id]}
+                                >
+                                  <SelectTrigger className="w-[120px] h-8 text-sm border-2 border-primary/20 hover:border-primary/50 transition-all">
+                                    <SelectValue />
+                                  </SelectTrigger>
                                 <SelectContent>
                                   <SelectItem value="admin">Admin</SelectItem>
                                   <SelectItem value="operationsstaff">Operations Staff</SelectItem>
                                   <SelectItem value="itteam">IT Team</SelectItem>
                                 </SelectContent>
                               </Select>
+                              </div>
                             )}
                           </div>
                           
