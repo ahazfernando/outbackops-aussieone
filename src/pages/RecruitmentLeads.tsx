@@ -287,7 +287,7 @@ function DroppableLeadColumn({
 }
 
 const RecruitmentLeads = () => {
-  const { user, getAllUsers } = useAuth();
+  const { user } = useAuth();
   const [leads, setLeads] = useState<RecruitmentLead[]>([]);
   const [analytics, setAnalytics] = useState<LeadAnalytics | null>(null);
   const [loading, setLoading] = useState(true);
@@ -312,7 +312,6 @@ const RecruitmentLeads = () => {
   const [remarks, setRemarks] = useState<string[]>(['']);
   const [tasks, setTasks] = useState<string[]>(['']);
   const [meetingDate, setMeetingDate] = useState<Date | undefined>(undefined);
-  const [allUsers, setAllUsers] = useState<any[]>([]);
   const [dateRange, setDateRange] = useState<DateRange | undefined>(undefined);
   const [sortOrder, setSortOrder] = useState<'latest' | 'oldest'>('latest');
   const [currentPage, setCurrentPage] = useState(1);
@@ -412,20 +411,6 @@ const RecruitmentLeads = () => {
   }, [filters, canView, user]);
 
   // Load users for employee assignment
-  useEffect(() => {
-    const loadUsers = async () => {
-      try {
-        const users = await getAllUsers();
-        const approvedUsers = users.filter((u: any) => u.status === 'approved');
-        setAllUsers(approvedUsers);
-      } catch (error) {
-        console.error('Error loading users:', error);
-      }
-    };
-    if (user) {
-      loadUsers();
-    }
-  }, [user, getAllUsers]);
 
   if (user?.role === 'itteam' && !user.permissions?.leadTracking) {
     return (
@@ -465,7 +450,7 @@ const RecruitmentLeads = () => {
         jobLocation: nativeFormData.get('jobLocation') as string,
         jobRole: (formData.jobRole || nativeFormData.get('jobRole')) as JobRole,
         businessOwnerManager: `${ownerManagerType}: ${nativeFormData.get('businessOwnerManager') as string}`,
-        vacancy: nativeFormData.get('vacancy') as string,
+        vacancy: '', // Vacancy field removed
         contactNo: nativeFormData.get('contactNo') as string,
         callNotes: nativeFormData.get('callNotes') as string,
         status: (formData.status || 'New') as LeadStatus,
@@ -548,35 +533,6 @@ const RecruitmentLeads = () => {
         });
       }
 
-      // Send notification if employee is assigned (new assignment or changed assignment)
-      const currentAssignedEmployee = formData.assignedTo;
-      const previousAssignedEmployee = editingLead?.assignedTo;
-      
-      if (currentAssignedEmployee && currentAssignedEmployee !== previousAssignedEmployee) {
-        const selectedUser = allUsers.find(u => u.id === currentAssignedEmployee);
-        if (selectedUser) {
-          try {
-            const leadTitle = leadData.businessName || 'a recruitment lead';
-            await createNotification({
-              userId: selectedUser.id,
-              type: 'lead_assigned',
-              title: 'New Lead Assignment',
-              message: `You have been assigned to lead: ${leadTitle} (${leadData.jobRole || 'N/A'})`,
-              relatedId: leadId,
-              relatedType: 'lead',
-              createdBy: user.id,
-              createdByName: user.name || 'Unknown',
-            });
-            toast({
-              title: 'Employee Assigned',
-              description: `${selectedUser.name || selectedUser.email} has been notified about this lead assignment.`,
-            });
-          } catch (error) {
-            console.error('Error creating notification:', error);
-            // Don't fail the whole operation if notification fails
-          }
-        }
-      }
 
       setOpen(false);
       setEditingLead(null);
@@ -586,8 +542,6 @@ const RecruitmentLeads = () => {
       setRemarks(['']);
       setTasks(['']);
       setMeetingDate(undefined);
-      setAssignedEmployee('');
-      setEmployeeSearchQuery('');
       
       // Refresh analytics
       const analyticsData = await getRecruitmentLeadsAnalytics();
@@ -643,9 +597,6 @@ const RecruitmentLeads = () => {
     
     // Set meeting date
     setMeetingDate(lead.meetingScheduled);
-    
-    // Set assigned employee
-    setAssignedEmployee(lead.assignedTo || '');
     
     setOpen(true);
   };
@@ -856,7 +807,7 @@ const RecruitmentLeads = () => {
   const exportToCSV = () => {
     const headers = [
       'Lead ID', 'Date', 'Platform', 'Business Name', 'Job Location', 'Requested Service',
-      'Business Owner/Manager', 'Vacancy', 'Contact No', 'Email', 'Status', 'Priority'
+      'Business Owner/Manager', 'Contact No', 'Email', 'Status', 'Priority'
     ];
     
     const rows = filteredLeads.map(lead => [
@@ -867,7 +818,6 @@ const RecruitmentLeads = () => {
       lead.jobLocation,
       lead.jobRole,
       lead.businessOwnerManager,
-      lead.vacancy,
       lead.contactNo,
       lead.emailAddress || '',
       lead.status,
@@ -924,7 +874,7 @@ const RecruitmentLeads = () => {
                 </h1>
                 <p className="text-muted-foreground text-sm mt-1.5 ml-1 flex items-center gap-2">
                   <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
-                  Manage and track recruitment opportunities
+                  Manage and track Business Leads Effectively
                 </p>
               </div>
             </div>
@@ -950,8 +900,6 @@ const RecruitmentLeads = () => {
                     setRemarks(['']);
                     setTasks(['']);
                     setMeetingDate(undefined);
-                    setAssignedEmployee('');
-                    setEmployeeSearchQuery('');
                   }
                 }}>
                   <DialogTrigger asChild>
@@ -1100,10 +1048,6 @@ const RecruitmentLeads = () => {
                             </div>
                           </div>
                         )}
-                      </div>
-                      <div className="space-y-2">
-                        <Label htmlFor="vacancy">Vacancy *</Label>
-                        <Input id="vacancy" name="vacancy" placeholder="e.g., Chef" defaultValue={editingLead?.vacancy || ''} required />
                       </div>
                       <div className="space-y-2">
                         <Label htmlFor="contactNo">Contact No. *</Label>
@@ -1964,13 +1908,6 @@ const RecruitmentLeads = () => {
                           <div className="space-y-1">
                             <Label className="text-xs text-muted-foreground">Requested Service</Label>
                             <p className="text-sm font-semibold">{selectedLead.jobRole}</p>
-                          </div>
-                          <div className="space-y-1">
-                            <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
-                              <UserPlus className="h-3.5 w-3.5" />
-                              Vacancy
-                            </Label>
-                            <p className="text-sm">{selectedLead.vacancy}</p>
                           </div>
                           {selectedLead.isEmployee && (
                             <div className="pt-2 border-t space-y-2">

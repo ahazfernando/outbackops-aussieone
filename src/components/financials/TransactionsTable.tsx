@@ -21,6 +21,7 @@ import { CalendarIcon, Edit, Trash2, Search, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { TransactionFormDialog } from './TransactionFormDialog';
 import { toast } from '@/hooks/use-toast';
+import type { DateRange } from 'react-day-picker';
 
 interface TransactionsTableProps {
   transactions: Transaction[];
@@ -41,7 +42,7 @@ export function TransactionsTable({ transactions, onTransactionUpdated }: Transa
   const [typeFilter, setTypeFilter] = useState<string>('all');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [gstFilter, setGstFilter] = useState<string>('all');
-  const [dateRange, setDateRange] = useState<{ from: Date | undefined; to: Date | undefined } | undefined>();
+  const [dateRange, setDateRange] = useState<DateRange | undefined>();
 
   const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat('en-AU', {
