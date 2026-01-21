@@ -29,13 +29,17 @@ import {
   Bell,
   Briefcase,
   DollarSign,
-  UserCircle
+  UserCircle,
+  GaugeCircle,
+  Calculator,
 } from 'lucide-react';
 
 const menuItems = [
   { title: 'Dashboard', url: '/dashboard', icon: LayoutDashboard, roles: ['admin', 'operationsstaff', 'itteam'] },
   { title: 'Financials', url: '/financials', icon: DollarSign, roles: ['admin'] },
+  { title: 'Costs', url: '/financials/costs', icon: Calculator, roles: ['admin'] },
   { title: 'Clients', url: '/clients', icon: UserCircle, roles: ['admin'] },
+  { title: 'KPIs', url: '/kpis', icon: GaugeCircle, roles: ['admin'] },
   // { title: 'Lead Tracking', url: '/leads', icon: Users, roles: ['admin', 'operationsstaff', 'itteam'] },
   { title: 'Business Leads', url: '/recruitment-leads', icon: Briefcase, roles: ['admin'] },
   { title: 'Reminders', url: '/reminders', icon: Bell, roles: ['admin', 'operationsstaff', 'itteam'] },
